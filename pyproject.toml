@@ -1,0 +1,14 @@
+[project]
+name = "rimborso-voli"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "google-generativeai>=0.8.6",
+    "img2pdf>=0.6.3",
+    "pandas>=3.0.5",
+    "pillow>=12.3.0",
+    "streamlit>=1.63.0",
+    "supabase>=2.31.0",
+]
