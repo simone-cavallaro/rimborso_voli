@@ -89,7 +89,20 @@ with tab1:
         
         if st.button("Analizza Documenti"):
             with st.spinner("Incrocio dei dati in corso..."):
-                prompt = """Estrai i seguenti dati in formato JSON valido, date in dd/mm/yyyy. Chiavi: "numero_volo", "data_acquisto", "data_volo", "aeroporto_partenza", "aeroporto_destinazione", "compagnia_aerea", "costo_tratta"."""
+                prompt = """Analizza i due documenti di viaggio forniti (una carta d'imbarco e una ricevuta di pagamento).
+                Estrai i seguenti dati incrociando le informazioni.
+                Restituisci ESATTAMENTE un oggetto JSON valido. Se un dato non è presente, inserisci "0" (per i numeri) o "" (per il testo).
+                
+                ATTENZIONE AL COSTO: per trovare il prezzo del biglietto, cerca attentamente sulla ricevuta parole come 'Totale', 'Importo','Totale Importo', 'Totale Pagato', 'Prezzo totale del viaggio', 'Importo totale', 'Amount', 'Total Pay', 'Prezzo', 'Total'. Prendi solo il numero finale.
+                
+                Chiavi richieste:
+                - "numero_volo" (es. ITY1786)
+                - "data_acquisto" (formato dd/mm/yyyy)
+                - "data_volo" (formato dd/mm/yyyy)
+                - "aeroporto_partenza" (nome o codice IATA)
+                - "aeroporto_destinazione" (nome o codice IATA)
+                - "compagnia_aerea"
+                - "costo_tratta" (solo il numero decimale con il punto, es. 45.99. NON includere il simbolo della valuta. Se non lo trovi, inserisci "0")"""
                 try:
                     response = model.generate_content([prompt, img_imbarco, img_ricevuta])
                     st.session_state['dati'] = json.loads(response.text)
