@@ -14,7 +14,7 @@ def init_supabase() -> Client:
 supabase = init_supabase()
 BUCKET_NAME = "pdf_rimborsi"
 
-st.title("✈️ Caro Voli Sicilia - Autocompilatore")
+st.title("✈️ Caro Voli Sicilia: Richiedere i rimborsi non è mai stato così semplice!")
 
 # ==========================================
 # GESTIONE AUTENTICAZIONE (LOGIN / REGISTRAZIONE)
@@ -42,7 +42,7 @@ if 'user' not in st.session_state:
             if st.form_submit_button("Crea Account"):
                 try:
                     res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
-                    st.success("Account creato! Ora puoi fare il Login.")
+                    st.success("Account creato! Verifica la tua email perconferma il tuo account.")
                 except Exception as e:
                     st.error(f"Errore: {e}")
                     
