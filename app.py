@@ -156,8 +156,8 @@ with tab1:
                         path_imbarco = f"{user.id}/Imbarco_{nome_base}.pdf"
                         path_ricevuta = f"{user.id}/Ricevuta_{nome_base}.pdf"
                         
-                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_imb, path=path_imbarco, file_options={"content-type": "application/pdf"})
-                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_ric, path=path_ricevuta, file_options={"content-type": "application/pdf"})
+                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_imb, path=path_imbarco, file_options={"content-type": "application/pdf", "x-upsert": "true"})
+                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_ric, path=path_ricevuta, file_options={"content-type": "application/pdf", "x-upsert": "true"})
                         
                         nuovo_record = {
                             "user_id": user.id,
