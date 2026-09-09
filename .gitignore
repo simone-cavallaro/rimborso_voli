@@ -12,3 +12,4 @@ wheels/
 .streamlit/
 *.db
 .DS_Store
+tests/
