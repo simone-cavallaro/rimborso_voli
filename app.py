@@ -107,7 +107,7 @@ with tab1:
                 
                 data_acquisto = c2.text_input("Acquisto", value=st.session_state['dati'].get('data_acquisto', ''))
                 data_volo = c2.text_input("Data Volo", value=st.session_state['dati'].get('data_volo', ''))
-                costo = c2.number_input("Costo Tratta", value=float(st.session_state['dati'].get('costo_tratta', 0.0)))
+                costo = c2.number_input("Costo Tratta", value=float(st.session_state['dati'].get('costo_tratta', 0,0)))
 
                 if st.form_submit_button("Salva in Cloud"):
                     with st.spinner("Salvataggio..."):
