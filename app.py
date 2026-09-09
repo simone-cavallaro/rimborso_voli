@@ -107,9 +107,32 @@ with tab1:
                 
                 data_acquisto = c2.text_input("Acquisto", value=st.session_state['dati'].get('data_acquisto', ''))
                 data_volo = c2.text_input("Data Volo", value=st.session_state['dati'].get('data_volo', ''))
-                costo = c2.number_input("Costo Tratta", value=float(st.session_state['dati'].get('costo_tratta', 0,0)))
+
+                # --- INIZIO BLOCCO GESTIONE COSTO CON VIRGOLA ---
+                raw_costo = st.session_state['dati'].get('costo_tratta', 0.0)
+                try:
+                    if isinstance(raw_costo, str):
+                        raw_costo = raw_costo.replace('€', '').replace(',', '.').strip()
+                        if raw_costo == '':
+                            raw_costo = 0.0
+                    costo_float = float(raw_costo)
+                except (ValueError, TypeError):
+                    costo_float = 0.0
+
+                # Formattiamo il numero a 2 decimali e sostituiamo il punto con la virgola
+                costo_str_iniziale = f"{costo_float:.2f}".replace('.', ',')
+                
+                # Usiamo text_input così l'utente vede e usa la virgola
+                costo_input = c2.text_input("Costo Tratta (€)", value=costo_str_iniziale)
+                # --- FINE BLOCCO GESTIONE COSTO ---
 
                 if st.form_submit_button("Salva in Cloud"):
+                # Riconvertiamo l'input dell'utente (che ha la virgola) in un float per il Database
+                    try:
+                        costo_db = float(costo_input.replace('€', '').replace(',', '.').strip())
+                    except ValueError:
+                        costo_db = 0.0
+
                     with st.spinner("Salvataggio..."):
                         pdf_imb = img2pdf.convert(file_imbarco.getvalue())
                         pdf_ric = img2pdf.convert(file_ricevuta.getvalue())
@@ -124,10 +147,10 @@ with tab1:
                         supabase.storage.from_(BUCKET_NAME).upload(file=pdf_ric, path=path_ricevuta, file_options={"content-type": "application/pdf"})
                         
                         nuovo_record = {
-                            "user_id": user.id, # Assegniamo il biglietto al proprietario
+                            "user_id": user.id,
                             "numero_volo": volo, "data_acquisto": data_acquisto, "data_volo": data_volo,
                             "aeroporto_partenza": partenza, "aeroporto_destinazione": destinazione,
-                            "compagnia_aerea": compagnia, "costo_tratta": costo,
+                            "compagnia_aerea": compagnia, "costo_tratta": costo_db,
                             "pdf_imbarco": path_imbarco, "pdf_ricevuta": path_ricevuta
                         }
                         supabase.table("richieste").insert(nuovo_record).execute()
@@ -145,10 +168,16 @@ with tab2:
         st.info("Nessun rimborso presente nel tuo storico.")
     else:
         df = pd.DataFrame(res.data)
-        st.metric(label="Totale Spese Aeree", value=f"€ {df['costo_tratta'].sum():.2f}")
+
+        # Calcoliamo il totale delle spese
+        totale_speso = df['costo_tratta'].sum()
+        # Formattiamo il totale con la virgola
+        totale_formattato = f"{totale_speso:.2f}".replace('.', ',')
+        st.metric(label="Totale Spese Aeree", value=f"€ {totale_formattato}")
         
         for _, row in df.iterrows():
-            with st.expander(f"{row['data_volo']} | {row['compagnia_aerea']} {row['numero_volo']} - €{row['costo_tratta']}"):
+            costo_riga = f"{row['costo_tratta']:.2f}".replace('.', ',')
+            with st.expander(f"{row['data_volo']} | {row['compagnia_aerea']} {row['numero_volo']} - €{costo_riga}"):
                 col_d, col_a = st.columns([2, 1])
                 col_d.write(f"**{row['aeroporto_partenza']} ➔ {row['aeroporto_destinazione']}**")
                 
