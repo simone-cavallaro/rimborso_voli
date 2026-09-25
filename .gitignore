@@ -9,7 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 *.db
 .DS_Store
-tests/
+node_modules/
