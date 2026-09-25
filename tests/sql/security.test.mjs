@@ -9,6 +9,7 @@ const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const migration = await readFile(new URL('../../supabase/migrations/202609250001_requests_security.sql', import.meta.url), 'utf8');
 const verification = await readFile(new URL('../../supabase/verify_security.sql', import.meta.url), 'utf8');
+const preflight = await readFile(new URL('../../supabase/preflight.sql', import.meta.url), 'utf8');
 
 for (const legacy of [false, true]) {
   test(`SQL security with ${legacy ? 'legacy bigint IDs and duplicate paths' : 'fresh UUID schema'}`, async () => {
@@ -48,9 +49,17 @@ for (const legacy of [false, true]) {
           create policy old_broad_table_policy on public.richieste for all to public using (true) with check (true);
         `);
       }
+      if (legacy) {
+        const before = (await db.query(preflight)).rows[0].preflight;
+        assert.equal(before.request_counts.total, 2);
+        assert.equal(before.request_counts.invalid_cost, 1);
+      }
       await db.exec(migration);
       await db.exec(migration); // Must be safe to re-apply.
       await db.exec(verification);
+      const inspected = (await db.query(preflight)).rows[0].preflight;
+      assert.equal(inspected.row_security.enabled, true);
+      assert.equal(inspected.bucket.public, false);
       const bucket = (await db.query("select * from storage.buckets where id='pdf_rimborsi'")).rows[0];
       assert.equal(bucket.public, false);
       assert.equal(Number(bucket.file_size_limit), 15728640);

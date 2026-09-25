@@ -37,6 +37,10 @@ La nuova versione richiede una migrazione: non basta sostituire `app.py`.
 La migrazione non è stata eseguita sul progetto cloud da questo workspace.
 
 1. Conserva un backup del database e l'esportazione delle policy esistenti.
+   Nel SQL Editor, `supabase/preflight.sql` restituisce schema, policy, permessi
+   e conteggi senza leggere i singoli viaggi. Salva il risultato in un luogo
+   privato (per esempio `.supabase-backups/`, esclusa da Git). Questa fotografia
+   della configurazione non sostituisce un backup del database o dei PDF.
 2. Applica prima la migrazione in un progetto di staging. Nel SQL Editor esegui
    `supabase/migrations/202609250001_requests_security.sql` con un account
    amministratore del progetto.

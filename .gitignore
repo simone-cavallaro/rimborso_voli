@@ -14,3 +14,4 @@ wheels/
 *.db
 .DS_Store
 node_modules/
+.supabase-backups/
