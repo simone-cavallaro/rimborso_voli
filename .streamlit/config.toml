@@ -1,0 +1,11 @@
+[server]
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 10
+maxMessageSize = 25
+
+[client]
+showErrorDetails = "none"
+
+[browser]
+gatherUsageStats = false

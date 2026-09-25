@@ -1,206 +1,326 @@
+import time
+from hashlib import sha256
+from uuid import uuid4
+
 import streamlit as st
-import google.generativeai as genai
-import img2pdf
-from PIL import Image
-import json
-import pandas as pd
-from supabase import create_client, Client
 
-# --- INIZIALIZZAZIONE SUPABASE ---
-@st.cache_resource
-def init_supabase() -> Client:
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+from domain import (
+    FIELDS, MAX_UPLOAD_BYTES, ValidationError, display_amount, display_date,
+    normalize_fields, plain_label, prepare_document,
+)
+from extraction import extract
+from repository import ConflictError, RequestsRepository, UncertainWriteError
+from security import clear_session, log_failure, session_client
 
-supabase = init_supabase()
-BUCKET_NAME = "pdf_rimborsi"
 
-st.title("✈️ Caro Voli Sicilia: Richiedere i rimborsi non è mai stato così semplice!")
+LABELS = {
+    "compagnia_aerea": "Compagnia", "numero_volo": "Numero volo",
+    "aeroporto_partenza": "Aeroporto di partenza", "aeroporto_destinazione": "Aeroporto di destinazione",
+    "data_acquisto": "Data di acquisto (gg/mm/aaaa)", "data_volo": "Data del volo (gg/mm/aaaa)",
+    "costo_tratta": "Costo della singola tratta (€)",
+}
 
-# ==========================================
-# GESTIONE AUTENTICAZIONE (LOGIN / REGISTRAZIONE)
-# ==========================================
-if 'user' not in st.session_state:
-    st.markdown("### Accesso alla Piattaforma")
-    tab_login, tab_reg = st.tabs(["🔑 Login", "📝 Registrati"])
-    
-    with tab_login:
-        with st.form("login_form"):
-            email_log = st.text_input("Email")
-            pass_log = st.text_input("Password", type="password")
-            if st.form_submit_button("Accedi"):
-                try:
-                    res = supabase.auth.sign_in_with_password({"email": email_log, "password": pass_log})
-                    st.session_state['user'] = res.user
-                    st.rerun()
-                except Exception as e:
-                    st.error("Credenziali non valide.")
-                    
-    with tab_reg:
-        with st.form("reg_form"):
-            email_reg = st.text_input("Email")
-            pass_reg = st.text_input("Password", type="password", help="Minimo 6 caratteri")
-            if st.form_submit_button("Crea Account"):
-                try:
-                    res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
-                    st.success("Account creato! Verifica la tua email perconferma il tuo account.")
-                except Exception as e:
-                    st.error(f"Errore: {e}")
-                    
-    st.stop() # Blocca l'esecuzione del resto dell'app se non si è loggati
 
-# Se siamo qui, l'utente è loggato.
-user = st.session_state['user']
-st.sidebar.success(f"Loggato come: {user.email}")
-if st.sidebar.button("Esci"):
-    supabase.auth.sign_out()
-    del st.session_state['user']
-    st.rerun()
-
-# --- FUNZIONE DI CANCELLAZIONE ---
-def delete_richiesta(record_id, path_imbarco, path_ricevuta):
-    if path_imbarco:
-        supabase.storage.from_(BUCKET_NAME).remove([path_imbarco])
-    if path_ricevuta:
-        supabase.storage.from_(BUCKET_NAME).remove([path_ricevuta])
-    supabase.table("richieste").delete().eq("id", record_id).execute()
-    st.rerun()
-
-# --- CONFIGURAZIONE LLM ---
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('models/gemini-3.6-flash', generation_config={"response_mime_type": "application/json"})
-
-# ==========================================
-# APPLICATIVO PRINCIPALE
-# ==========================================
-tab1, tab2 = st.tabs(["➕ Nuova Richiesta", "🗂️ Storico Rimborsi"])
-
-with tab1:
-    st.markdown("### 1. Caricamento Documenti")
-    col1, col2 = st.columns(2)
-    file_imbarco = col1.file_uploader("🎫 Carta d'Imbarco", type=["jpg", "jpeg", "png"])
-    file_ricevuta = col2.file_uploader("🧾 Ricevuta", type=["jpg", "jpeg", "png"])
-
-    if file_imbarco and file_ricevuta:
-        col_img1, col_img2 = st.columns(2)
-        img_imbarco = Image.open(file_imbarco)
-        img_ricevuta = Image.open(file_ricevuta)
-        col_img1.image(img_imbarco, use_container_width=True)
-        col_img2.image(img_ricevuta, use_container_width=True)
-        
-        if st.button("Analizza Documenti"):
-            with st.spinner("Incrocio dei dati in corso..."):
-                prompt = """Analizza i due documenti di viaggio forniti (una carta d'imbarco e una ricevuta di pagamento).
-                Estrai i seguenti dati incrociando le informazioni.
-                Restituisci ESATTAMENTE un oggetto JSON valido. Se un dato non è presente, inserisci "0" (per i numeri) o "" (per il testo).
-                
-                ATTENZIONE AL COSTO: per trovare il prezzo del biglietto, cerca attentamente sulla ricevuta parole come 'Totale', 'Importo','Totale Importo', 'Totale Pagato', 'Prezzo totale del viaggio', 'Importo totale', 'Amount', 'Total Pay', 'Prezzo', 'Total'. Prendi solo il numero finale.
-                
-                Chiavi richieste:
-                - "numero_volo" (es. ITY1786)
-                - "data_acquisto" (formato dd/mm/yyyy)
-                - "data_volo" (formato dd/mm/yyyy)
-                - "aeroporto_partenza" (nome o codice IATA)
-                - "aeroporto_destinazione" (nome o codice IATA)
-                - "compagnia_aerea"
-                - "costo_tratta" (solo il numero decimale con il punto, es. 45.99. NON includere il simbolo della valuta. Se non lo trovi, inserisci "0")"""
-                try:
-                    response = model.generate_content([prompt, img_imbarco, img_ricevuta])
-                    st.session_state['dati'] = json.loads(response.text)
-                    st.success("Estrazione completata!")
-                except Exception as e:
-                    st.error("Errore durante l'analisi.")
-
-        if 'dati' in st.session_state:
-            with st.form("form_revisione"):
-                c1, c2 = st.columns(2)
-                compagnia = c1.text_input("Compagnia", value=st.session_state['dati'].get('compagnia_aerea', ''))
-                volo = c1.text_input("Volo", value=st.session_state['dati'].get('numero_volo', ''))
-                partenza = c1.text_input("Da", value=st.session_state['dati'].get('aeroporto_partenza', ''))
-                destinazione = c1.text_input("A", value=st.session_state['dati'].get('aeroporto_destinazione', ''))
-                
-                data_acquisto = c2.text_input("Acquisto", value=st.session_state['dati'].get('data_acquisto', ''))
-                data_volo = c2.text_input("Data Volo", value=st.session_state['dati'].get('data_volo', ''))
-
-                # --- INIZIO BLOCCO GESTIONE COSTO CON VIRGOLA ---
-                raw_costo = st.session_state['dati'].get('costo_tratta', 0.0)
-                try:
-                    if isinstance(raw_costo, str):
-                        raw_costo = raw_costo.replace('€', '').replace(',', '.').strip()
-                        if raw_costo == '':
-                            raw_costo = 0.0
-                    costo_float = float(raw_costo)
-                except (ValueError, TypeError):
-                    costo_float = 0.0
-
-                # Formattiamo il numero a 2 decimali e sostituiamo il punto con la virgola
-                costo_str_iniziale = f"{costo_float:.2f}".replace('.', ',')
-                
-                # Usiamo text_input così l'utente vede e usa la virgola
-                costo_input = c2.text_input("Costo Tratta (€)", value=costo_str_iniziale)
-                # --- FINE BLOCCO GESTIONE COSTO ---
-
-                if st.form_submit_button("Salva in Cloud"):
-                # Riconvertiamo l'input dell'utente (che ha la virgola) in un float per il Database
-                    try:
-                        costo_db = float(costo_input.replace('€', '').replace(',', '.').strip())
-                    except ValueError:
-                        costo_db = 0.0
-
-                    with st.spinner("Salvataggio..."):
-                        pdf_imb = img2pdf.convert(file_imbarco.getvalue())
-                        pdf_ric = img2pdf.convert(file_ricevuta.getvalue())
-                        
-                        nome_base = f"{compagnia.replace(' ', '')}_{volo.replace(' ', '')}_{data_volo.replace('/', '-')}"
-                        
-                        # Salviamo i file isolandoli nella cartella col nome dell'ID utente!
-                        path_imbarco = f"{user.id}/Imbarco_{nome_base}.pdf"
-                        path_ricevuta = f"{user.id}/Ricevuta_{nome_base}.pdf"
-                        
-                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_imb, path=path_imbarco, file_options={"content-type": "application/pdf", "x-upsert": "true"})
-                        supabase.storage.from_(BUCKET_NAME).upload(file=pdf_ric, path=path_ricevuta, file_options={"content-type": "application/pdf", "x-upsert": "true"})
-                        
-                        nuovo_record = {
-                            "user_id": user.id,
-                            "numero_volo": volo, "data_acquisto": data_acquisto, "data_volo": data_volo,
-                            "aeroporto_partenza": partenza, "aeroporto_destinazione": destinazione,
-                            "compagnia_aerea": compagnia, "costo_tratta": costo_db,
-                            "pdf_imbarco": path_imbarco, "pdf_ricevuta": path_ricevuta
-                        }
-                        supabase.table("richieste").insert(nuovo_record).execute()
-                        del st.session_state['dati']
-                        st.success("✅ Salvato nel tuo spazio personale!")
-
-with tab2:
-    st.markdown("### 🗂️ I tuoi Rimborsi Personali")
-    
-    # La query chiederà TUTTI i dati, ma il database restituirà SOLO quelli dell'utente loggato
-    # grazie alle regole SQL inserite prima!
-    res = supabase.table("richieste").select("*").order("created_at", desc=True).execute()
-    
-    if not res.data:
-        st.info("Nessun rimborso presente nel tuo storico.")
+def fail(operation, exc):
+    log_failure(operation, exc)
+    if isinstance(exc, (ValidationError, ConflictError, UncertainWriteError)):
+        st.error(str(exc))
     else:
-        df = pd.DataFrame(res.data)
+        st.error("Operazione non riuscita. I dati potrebbero non essere aggiornati: controlla lo storico prima di riprovare.")
 
-        # Calcoliamo il totale delle spese
-        totale_speso = df['costo_tratta'].sum()
-        # Formattiamo il totale con la virgola
-        totale_formattato = f"{totale_speso:.2f}".replace('.', ',')
-        st.metric(label="Totale Spese Aeree", value=f"€ {totale_formattato}")
-        
-        for _, row in df.iterrows():
-            costo_riga = f"{row['costo_tratta']:.2f}".replace('.', ',')
-            with st.expander(f"{row['data_volo']} | {row['compagnia_aerea']} {row['numero_volo']} - €{costo_riga}"):
-                col_d, col_a = st.columns([2, 1])
-                col_d.write(f"**{row['aeroporto_partenza']} ➔ {row['aeroporto_destinazione']}**")
-                
+
+def reset_editor(prefix):
+    for key in list(st.session_state):
+        if key.startswith(prefix + "_"):
+            del st.session_state[key]
+
+
+def flash(message, warnings=()):
+    st.session_state["notice"] = (message, list(warnings))
+
+
+def show_notice():
+    notice = st.session_state.pop("notice", None)
+    if notice:
+        st.success(notice[0])
+        for warning in notice[1]:
+            st.warning(warning)
+
+
+def authenticate(client):
+    if "user_id" in st.session_state:
+        try:
+            session = client.auth.get_session()
+            response = client.auth.get_user() if session else None
+            if not response or not response.user or str(response.user.id) != st.session_state["user_id"]:
+                raise ValueError("Session expired")
+            return response.user
+        except Exception as exc:
+            log_failure("verify_session", exc)
+            clear_session(st.session_state)
+            flash("La sessione è terminata. Accedi nuovamente.")
+            st.rerun()
+
+    login, registration = st.tabs(["Accedi", "Registrati"])
+    with login:
+        with st.form("login"):
+            email = st.text_input("Email", max_chars=254)
+            password = st.text_input("Password", type="password", max_chars=128)
+            submitted = st.form_submit_button("Accedi")
+        if submitted:
+            try:
+                response = client.auth.sign_in_with_password({"email": email.strip(), "password": password})
+                if not response.user or not response.session:
+                    raise ValueError("No authenticated session")
+                clear_session(st.session_state)
+                st.session_state["supabase_client"] = client
+                st.session_state["user_id"] = str(response.user.id)
+            except Exception as exc:
+                log_failure("login", exc)
+                st.error("Accesso non riuscito. Verifica le credenziali e la conferma dell'email.")
+            else:
+                st.rerun()
+    with registration:
+        with st.form("registration"):
+            email = st.text_input("Email", key="registration_email", max_chars=254)
+            password = st.text_input("Password", key="registration_password", type="password", max_chars=128,
+                                     help="Usa almeno 12 caratteri e una password diversa da altri servizi.")
+            submitted = st.form_submit_button("Crea account")
+        if submitted:
+            if len(password) < 12:
+                st.error("La password deve contenere almeno 12 caratteri.")
+            else:
                 try:
-                    imb = supabase.storage.from_(BUCKET_NAME).download(row['pdf_imbarco'])
-                    ric = supabase.storage.from_(BUCKET_NAME).download(row['pdf_ricevuta'])
-                    col_a.download_button("📄 Imbarco", data=imb, file_name="Imbarco.pdf", key=f"i_{row['id']}")
-                    col_a.download_button("📄 Ricevuta", data=ric, file_name="Ricevuta.pdf", key=f"r_{row['id']}")
-                except:
-                    st.error("Errore recupero PDF")
-                
-                if st.button("🗑️ Elimina", key=f"d_{row['id']}", type="primary"):
-                    delete_richiesta(row['id'], row['pdf_imbarco'], row['pdf_ricevuta'])
+                    result = client.auth.sign_up({"email": email.strip(), "password": password})
+                    if result.session:
+                        client.auth.sign_out({"scope": "local"})
+                    clear_session(st.session_state)
+                    flash("Se la registrazione può essere completata, riceverai un'email con le istruzioni. Poi accedi.")
+                except Exception as exc:
+                    log_failure("registration", exc)
+                    st.error("Registrazione non riuscita. Riprova più tardi.")
+                else:
+                    st.rerun()
+    st.stop()
+
+
+def uploads(prefix, editing=False):
+    left, right = st.columns(2)
+    with left:
+        receipt = st.file_uploader("Sostituisci ricevuta (facoltativo)" if editing else "Ricevuta di pagamento",
+                                   type=["jpg", "jpeg", "png"], key=f"{prefix}_receipt", max_upload_size=10)
+    with right:
+        boarding = st.file_uploader("Aggiungi o sostituisci carta d'imbarco (facoltativo)",
+                                    type=["jpg", "jpeg", "png"], key=f"{prefix}_boarding", max_upload_size=10)
+    documents, fingerprints = {}, []
+    valid = True
+    for field, uploaded in (("pdf_ricevuta", receipt), ("pdf_imbarco", boarding)):
+        if uploaded is None:
+            fingerprints.append(None)
+            st.session_state.pop(f"{prefix}_prepared_{field}", None)
+            continue
+        try:
+            if uploaded.size > MAX_UPLOAD_BYTES:
+                raise ValidationError("Ogni immagine deve essere di massimo 10 MB.")
+            data = uploaded.getvalue()
+            digest = sha256(data).hexdigest()
+            fingerprints.append(digest)
+            key = f"{prefix}_prepared_{field}"
+            cached = st.session_state.get(key)
+            if not cached or cached.digest != digest:
+                st.session_state[key] = prepare_document(data)
+            documents[field] = st.session_state[key]
+        except Exception as exc:
+            valid = False
+            fingerprints.append("invalid")
+            fail("validate_upload", exc)
+    return documents, tuple(fingerprints), valid
+
+
+def set_editor_values(prefix, values):
+    for field in FIELDS:
+        value = values.get(field)
+        if field.startswith("data_"):
+            value = display_date(value)
+        elif field == "costo_tratta":
+            value = display_amount(value)
+        st.session_state[f"{prefix}_field_{field}"] = value or ""
+
+
+def editor(prefix, initial, documents, changed, valid):
+    if changed:
+        set_editor_values(prefix, initial)
+    if documents:
+        with st.expander("Anteprima dei nuovi documenti"):
+            for field, document in documents.items():
+                st.image(document.image, caption="Ricevuta" if field == "pdf_ricevuta" else "Carta d'imbarco", width=400)
+    st.caption("L'analisi AI è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Google Gemini. Verifica sempre i dati estratti, soprattutto il costo della singola tratta.")
+    if st.button("Leggi i nuovi documenti con AI", key=f"{prefix}_analyze", disabled=not documents or not valid):
+        try:
+            if time.monotonic() - st.session_state.get("last_analysis", -100) < 15:
+                raise ValidationError("Attendi qualche secondo prima di ripetere l'analisi.")
+            st.session_state["last_analysis"] = time.monotonic()
+            set_editor_values(prefix, initial)
+            with st.spinner("Lettura dei documenti..."):
+                values = extract(documents, st.secrets["GEMINI_API_KEY"],
+                                 st.secrets.get("GEMINI_MODEL", "models/gemini-3.6-flash"))
+            merged = {**initial, **{k: v for k, v in values.items() if v not in (None, "")}}
+            set_editor_values(prefix, merged)
+            st.success("Analisi completata. Controlla e correggi i dati prima di salvare.")
+        except Exception as exc:
+            fail("extract_documents", exc)
+    st.caption("Puoi lasciare vuoti i dati che non conosci e completarli in seguito. Le date e gli importi inseriti devono essere validi.")
+    with st.form(f"{prefix}_form"):
+        values = {}
+        for field in FIELDS:
+            values[field] = st.text_input(LABELS[field], key=f"{prefix}_field_{field}", max_chars=160)
+        save = st.form_submit_button("Salva modifiche" if prefix == "edit" else "Salva richiesta", disabled=not valid)
+    return normalize_fields(values) if save else None
+
+
+def new_request(repo):
+    st.subheader("Nuova richiesta")
+    st.write("Salva la ricevuta appena acquisti il volo. Potrai aggiungere la carta d'imbarco dallo storico prima della partenza.")
+    if st.button("Svuota e inizia una nuova richiesta"):
+        reset_editor("new")
+        st.rerun()
+    documents, fingerprint, valid = uploads("new")
+    changed = st.session_state.get("new_fingerprint") != fingerprint
+    if changed or "new_request_id" not in st.session_state:
+        st.session_state["new_fingerprint"] = fingerprint
+        st.session_state["new_request_id"] = str(uuid4())
+    try:
+        values = editor("new", {}, documents, changed, valid)
+        if values is not None:
+            with st.spinner("Salvataggio della richiesta..."):
+                _, warnings = repo.create(values, documents, st.session_state["new_request_id"])
+            reset_editor("new")
+            flash("Richiesta salvata. La trovi nello storico, dove puoi completarla o modificarla.", warnings)
+            st.rerun()
+    except Exception as exc:
+        fail("create_request", exc)
+
+
+def edit_request(repo):
+    record = st.session_state["editing"]
+    st.subheader("Modifica richiesta")
+    st.write("I documenti già salvati vengono conservati. Carica soltanto quelli da aggiungere o sostituire.")
+    st.info("Ricevuta salvata" if record.get("pdf_ricevuta") else "Ricevuta da aggiungere")
+    st.info("Carta d'imbarco salvata" if record.get("pdf_imbarco") else "Carta d'imbarco da aggiungere")
+    if st.button("Annulla e torna allo storico"):
+        st.session_state.pop("editing", None)
+        reset_editor("edit")
+        st.rerun()
+    documents, fingerprint, valid = uploads("edit", editing=True)
+    changed = st.session_state.get("edit_fingerprint") != fingerprint
+    st.session_state["edit_fingerprint"] = fingerprint
+    try:
+        values = editor("edit", record, documents, changed, valid)
+        if values is not None:
+            with st.spinner("Salvataggio delle modifiche..."):
+                _, warnings = repo.update(record, values, documents)
+            st.session_state.pop("editing", None)
+            st.session_state.pop("download", None)
+            reset_editor("edit")
+            flash("Richiesta aggiornata.", warnings)
+            st.rerun()
+    except Exception as exc:
+        fail("update_request", exc)
+
+
+def history(repo):
+    if "editing" in st.session_state:
+        edit_request(repo)
+        return
+    st.subheader("Storico rimborsi")
+    page = st.session_state.get("history_page", 0)
+    try:
+        records, has_more = repo.page(page)
+        summary = repo.summary()
+    except Exception as exc:
+        fail("load_history", exc)
+        st.info("Se il problema persiste, contatta l'amministratore della piattaforma.")
+        return
+    total = display_amount(summary["totale_speso"]) or "0,00"
+    st.metric("Totale spese aeree", f"€ {total}")
+    st.caption(f"{summary['numero_richieste']} richieste complessive. Il totale include solo gli importi validi già inseriti.")
+    if not records:
+        st.info("Nessuna richiesta in questa pagina.")
+    st.caption(f"Pagina {page + 1} · fino a 20 richieste per pagina")
+    for row in records:
+        record_id = row["id"]
+        status = "Documenti completi" if row.get("pdf_imbarco") and row.get("pdf_ricevuta") else "Documenti da completare"
+        title = f"{display_date(row.get('data_volo')) or 'Data da inserire'} · {row.get('compagnia_aerea') or 'Compagnia da inserire'} {row.get('numero_volo') or ''} · {status}"
+        with st.expander(plain_label(title)):
+            st.text(f"{row.get('aeroporto_partenza') or '—'} → {row.get('aeroporto_destinazione') or '—'}")
+            st.text(f"Acquisto: {display_date(row.get('data_acquisto')) or 'Da inserire'}")
+            amount = display_amount(row.get("costo_tratta"))
+            st.text(f"Costo tratta: {amount + ' €' if amount else 'Da inserire'}")
+            if not row.get("pdf_imbarco"):
+                st.info("Puoi aggiungere la carta d'imbarco quando sarà disponibile.")
+            if st.button("Modifica / aggiungi carta d'imbarco", key=f"edit_button_{record_id}"):
+                reset_editor("edit")
+                st.session_state["editing"] = row
+                st.session_state.pop("download", None)
+                st.rerun()
+            for field, label in (("pdf_ricevuta", "Ricevuta"), ("pdf_imbarco", "Carta d'imbarco")):
+                if row.get(field) and st.button(f"Prepara download: {label}", key=f"prepare_{field}_{record_id}"):
+                    try:
+                        data = repo.download(record_id, field)
+                        st.session_state["download"] = (record_id, field, data)
+                    except Exception as exc:
+                        fail("download_document", exc)
+                cached = st.session_state.get("download")
+                if cached and cached[:2] == (record_id, field):
+                    st.download_button(f"Scarica {label}", cached[2], file_name=f"{field}_{record_id}.pdf",
+                                       mime="application/pdf", key=f"download_{field}_{record_id}", on_click="ignore")
+            confirm = st.checkbox("Confermo di voler eliminare questa richiesta", key=f"confirm_{record_id}")
+            if st.button("Elimina richiesta", key=f"delete_{record_id}", disabled=not confirm):
+                try:
+                    warnings = repo.delete(row)
+                    st.session_state.pop("download", None)
+                    flash("Richiesta eliminata.", warnings)
+                    st.rerun()
+                except Exception as exc:
+                    fail("delete_request", exc)
+    previous, following = st.columns(2)
+    if previous.button("Pagina precedente", disabled=page == 0):
+        st.session_state["history_page"] = page - 1
+        st.session_state.pop("download", None)
+        st.rerun()
+    if following.button("Pagina successiva", disabled=not has_more):
+        st.session_state["history_page"] = page + 1
+        st.session_state.pop("download", None)
+        st.rerun()
+
+
+def main():
+    st.set_page_config(page_title="Caro Voli Sicilia", page_icon="✈️")
+    st.title("✈️ Caro Voli Sicilia")
+    show_notice()
+    try:
+        client = session_client(st.session_state, st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    except Exception as exc:
+        log_failure("configuration", exc)
+        st.error("La piattaforma non è configurata correttamente. Contatta l'amministratore.")
+        st.stop()
+    user = authenticate(client)
+    st.sidebar.text(f"Accesso: {user.email}")
+    if st.sidebar.button("Esci"):
+        try:
+            client.auth.sign_out({"scope": "local"})
+        except Exception as exc:
+            log_failure("logout", exc)
+        finally:
+            clear_session(st.session_state)
+        st.rerun()
+    repo = RequestsRepository(client, user.id)
+    view = st.sidebar.radio("Vai a", ["Nuova richiesta", "Storico rimborsi"])
+    if view == "Nuova richiesta":
+        new_request(repo)
+    else:
+        history(repo)
+
+
+if __name__ == "__main__":
+    main()
