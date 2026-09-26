@@ -3,6 +3,7 @@ from hashlib import sha256
 from uuid import uuid4
 
 import streamlit as st
+from google.genai import errors as genai_errors
 
 from domain import (
     FIELDS, MAX_UPLOAD_BYTES, ValidationError, display_amount, display_date,
@@ -27,6 +28,16 @@ def fail(operation, exc):
         st.error(str(exc))
     else:
         st.error("Operazione non riuscita. I dati potrebbero non essere aggiornati: controlla lo storico prima di riprovare.")
+
+
+def fail_extraction(exc):
+    log_failure("extract_documents", exc)
+    if isinstance(exc, ValidationError):
+        st.error(str(exc))
+    elif isinstance(exc, genai_errors.APIError) and exc.code in (408, 429, 500, 502, 503, 504):
+        st.error("Gemini è temporaneamente non disponibile. Nessun dato è stato salvato: riprova più tardi o compila i campi manualmente.")
+    else:
+        st.error("L'analisi AI non è riuscita. Nessun dato è stato salvato: puoi riprovare o compilare i campi manualmente.")
 
 
 def reset_editor(prefix):
@@ -160,15 +171,15 @@ def editor(prefix, initial, documents, changed, valid):
             if time.monotonic() - st.session_state.get("last_analysis", -100) < 15:
                 raise ValidationError("Attendi qualche secondo prima di ripetere l'analisi.")
             st.session_state["last_analysis"] = time.monotonic()
-            set_editor_values(prefix, initial)
             with st.spinner("Lettura dei documenti..."):
                 values = extract(documents, st.secrets["GEMINI_API_KEY"],
                                  st.secrets.get("GEMINI_MODEL", "models/gemini-3.6-flash"))
-            merged = {**initial, **{k: v for k, v in values.items() if v not in (None, "")}}
+            current = {field: st.session_state.get(f"{prefix}_field_{field}", initial.get(field)) for field in FIELDS}
+            merged = {**current, **{k: v for k, v in values.items() if v not in (None, "")}}
             set_editor_values(prefix, merged)
             st.success("Analisi completata. Controlla e correggi i dati prima di salvare.")
         except Exception as exc:
-            fail("extract_documents", exc)
+            fail_extraction(exc)
     st.caption("Puoi lasciare vuoti i dati che non conosci e completarli in seguito. Le date e gli importi inseriti devono essere validi.")
     with st.form(f"{prefix}_form"):
         values = {}

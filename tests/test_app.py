@@ -6,6 +6,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from PIL import Image
+from google.genai import errors as genai_errors
 from streamlit.testing.v1 import AppTest
 
 from repository import RequestsRepository
@@ -83,10 +84,14 @@ class AppTests(unittest.TestCase):
     def test_failed_ai_still_allows_manual_saving(self):
         self.uploads["new_receipt"] = image_upload()
         self.app.run()
-        with patch("extraction.extract", side_effect=RuntimeError("secret-provider-details")):
+        self.app.text_input(key="new_field_numero_volo").set_value("AB789").run()
+        error = genai_errors.ServerError(503, {"error": {"message": "secret-provider-details"}})
+        with patch("extraction.extract", side_effect=error):
             self.click("Leggi i nuovi documenti con AI")
-        self.assertNotIn("secret-provider-details", str(self.app.error))
-        self.app.text_input(key="new_field_numero_volo").set_value("AB789")
+        self.assertNotIn("secret-provider-details", self.app.error[0].value)
+        self.assertIn("temporaneamente non disponibile", self.app.error[0].value)
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "AB789")
+        self.assertEqual(self.client.rows, [])
         self.click("Salva richiesta")
         self.assert_clean()
         self.assertEqual(self.client.rows[0]["numero_volo"], "AB789")

@@ -38,6 +38,32 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn("systemInstruction", requests[0])
         self.assertEqual(len(requests[0]["contents"][0]["parts"]), 2)
 
+    def test_retries_temporary_gemini_failure(self):
+        attempts = 0
+
+        def respond(request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(503, json={"error": {
+                    "code": 503, "message": "temporary failure", "status": "UNAVAILABLE",
+                }})
+            return httpx.Response(200, json={"candidates": [{
+                "content": {"role": "model", "parts": [{"text": '{"numero_volo":"AB123"}'}]},
+                "finishReason": "STOP",
+            }]})
+
+        real_client = genai.Client
+
+        def local_client(**kwargs):
+            kwargs["http_options"].client_args = {"transport": httpx.MockTransport(respond)}
+            return real_client(**kwargs)
+
+        with patch("extraction.genai.Client", side_effect=local_client):
+            values = extract({"pdf_ricevuta": SimpleNamespace(image=Image.new("RGB", (8, 8)))}, "test-key")
+        self.assertEqual(values["numero_volo"], "AB123")
+        self.assertEqual(attempts, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
