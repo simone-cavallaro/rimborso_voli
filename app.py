@@ -10,6 +10,7 @@ from domain import (
     normalize_fields, plain_label, prepare_document,
 )
 from extraction import extract
+import ocr_fallback
 from repository import ConflictError, RequestsRepository, UncertainWriteError
 from security import clear_session, log_failure, session_client
 
@@ -20,6 +21,7 @@ LABELS = {
     "data_acquisto": "Data di acquisto (gg/mm/aaaa)", "data_volo": "Data del volo (gg/mm/aaaa)",
     "costo_tratta": "Costo della singola tratta (€)",
 }
+TEMPORARY_GEMINI_ERRORS = (408, 429, 500, 502, 503, 504)
 
 
 def fail(operation, exc):
@@ -34,7 +36,7 @@ def fail_extraction(exc):
     log_failure("extract_documents", exc)
     if isinstance(exc, ValidationError):
         st.error(str(exc))
-    elif isinstance(exc, genai_errors.APIError) and exc.code in (408, 429, 500, 502, 503, 504):
+    elif isinstance(exc, genai_errors.APIError) and exc.code in TEMPORARY_GEMINI_ERRORS:
         st.error("Gemini è temporaneamente non disponibile. Nessun dato è stato salvato: riprova più tardi o compila i campi manualmente.")
     else:
         st.error("L'analisi AI non è riuscita. Nessun dato è stato salvato: puoi riprovare o compilare i campi manualmente.")
@@ -158,6 +160,29 @@ def set_editor_values(prefix, values):
         st.session_state[f"{prefix}_field_{field}"] = value or ""
 
 
+def extract_with_fallback(documents):
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    gemini_error = None
+    if api_key:
+        try:
+            return extract(documents, api_key,
+                           st.secrets.get("GEMINI_MODEL", "models/gemini-3.6-flash")), "gemini"
+        except genai_errors.APIError as exc:
+            if exc.code not in TEMPORARY_GEMINI_ERRORS:
+                raise
+            gemini_error = exc
+    try:
+        values = ocr_fallback.extract_local(documents)
+    except Exception as exc:
+        log_failure("ocr_fallback", exc)
+        if gemini_error is not None:
+            raise gemini_error from exc
+        raise
+    if gemini_error is not None:
+        log_failure("extract_documents", gemini_error)
+    return values, "ocr"
+
+
 def editor(prefix, initial, documents, changed, valid):
     if changed:
         set_editor_values(prefix, initial)
@@ -165,19 +190,24 @@ def editor(prefix, initial, documents, changed, valid):
         with st.expander("Anteprima dei nuovi documenti"):
             for field, document in documents.items():
                 st.image(document.image, caption="Ricevuta" if field == "pdf_ricevuta" else "Carta d'imbarco", width=400)
-    st.caption("L'analisi AI è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Google Gemini. Verifica sempre i dati estratti, soprattutto il costo della singola tratta.")
+    st.caption("L'analisi automatica è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Google Gemini, se configurato. Se Gemini è temporaneamente indisponibile, l'app prova l'OCR locale. Verifica sempre i dati proposti, soprattutto il costo della singola tratta.")
     if st.button("Leggi i nuovi documenti con AI", key=f"{prefix}_analyze", disabled=not documents or not valid):
         try:
             if time.monotonic() - st.session_state.get("last_analysis", -100) < 15:
                 raise ValidationError("Attendi qualche secondo prima di ripetere l'analisi.")
             st.session_state["last_analysis"] = time.monotonic()
             with st.spinner("Lettura dei documenti..."):
-                values = extract(documents, st.secrets["GEMINI_API_KEY"],
-                                 st.secrets.get("GEMINI_MODEL", "models/gemini-3.6-flash"))
+                values, source = extract_with_fallback(documents)
             current = {field: st.session_state.get(f"{prefix}_field_{field}", initial.get(field)) for field in FIELDS}
             merged = {**current, **{k: v for k, v in values.items() if v not in (None, "")}}
             set_editor_values(prefix, merged)
-            st.success("Analisi completata. Controlla e correggi i dati prima di salvare.")
+            if source == "ocr":
+                if any(value not in (None, "") for value in values.values()):
+                    st.warning("Dati letti con OCR locale. Controlla attentamente i campi proposti prima di salvare.")
+                else:
+                    st.warning("L'OCR locale non ha riconosciuto dati sufficientemente affidabili. Compila i campi manualmente.")
+            else:
+                st.success("Analisi completata. Controlla e correggi i dati prima di salvare.")
         except Exception as exc:
             fail_extraction(exc)
     st.caption("Puoi lasciare vuoti i dati che non conosci e completarli in seguito. Le date e gli importi inseriti devono essere validi.")

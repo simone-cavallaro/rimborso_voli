@@ -17,7 +17,7 @@ La ricevuta di acquisto è disponibile subito, mentre la carta d'imbarco arriva 
 ## Come funziona
 
 1. **Salva la ricevuta:** carica un'immagine JPG, JPEG o PNG della ricevuta di pagamento. La carta d'imbarco non è necessaria in questa fase.
-2. **Compila i dati:** inseriscili manualmente oppure usa Gemini per proporre le informazioni ricavate dai documenti. Le immagini vengono inviate a Gemini solo quando avvii l'analisi.
+2. **Compila i dati:** inseriscili manualmente oppure avvia l'analisi automatica. L'app prova Gemini se configurato e, se il servizio è temporaneamente indisponibile, usa l'OCR locale. Le immagini vengono inviate a Gemini solo quando avvii l'analisi.
 3. **Controlla e correggi:** verifica sempre i dati proposti, in particolare il costo della singola tratta quando una prenotazione comprende più voli o passeggeri.
 4. **Completa in seguito:** quando ricevi la carta d'imbarco, apri il rimborso nello storico e aggiungila. Puoi anche modificare i dati o sostituire i documenti già caricati.
 5. **Scarica i PDF:** l'app prepara i documenti in formato PDF, pronti per essere utilizzati durante la compilazione sul portale.
@@ -27,7 +27,7 @@ Nello storico, **«Documenti completi»** significa soltanto che sono presenti s
 ## Tecnologie utilizzate
 
 - **Interfaccia e logica applicativa:** [Streamlit](https://streamlit.io/) e Python
-- **Estrazione dei dati:** API Gemini, con possibilità di compilazione manuale
+- **Estrazione dei dati:** API Gemini, fallback OCR con Tesseract e compilazione manuale
 - **Database e autenticazione:** PostgreSQL e [Supabase](https://supabase.com/)
 - **Archivio documenti:** Supabase Storage
 - **Elaborazione delle immagini e PDF:** Pillow e `img2pdf`
@@ -37,11 +37,11 @@ Nello storico, **«Documenti completi»** significa soltanto che sono presenti s
 
 L'accesso richiede un account. Le policy **Row Level Security (RLS)** limitano le operazioni sui rimborsi al rispettivo proprietario; il bucket dei documenti è privato e consente l'accesso ai file dell'utente autenticato. L'app usa un client Supabase distinto per sessione, valida dati e immagini caricati e non richiede chiavi Supabase privilegiate.
 
-L'analisi con Gemini è facoltativa. Se la usi, controlla il risultato prima di salvarlo: l'estrazione automatica può commettere errori o non trovare alcuni campi.
+L'analisi automatica è facoltativa. Il fallback OCR gira sul server che ospita l'app, senza inviare i documenti a un'altra API. Controlla sempre il risultato prima di salvarlo: l'estrazione automatica può commettere errori o lasciare vuoti i campi incerti.
 
 ## 💻 Esegui l'app in locale
 
-Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/), un progetto Supabase configurato e, solo se vuoi usare l'analisi automatica, una chiave API Gemini.
+Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supabase configurato. La chiave API Gemini è facoltativa. Per usare anche l'OCR in locale, installa Tesseract con le lingue italiana e inglese e rendi disponibile il comando `tesseract` nel PATH; su Streamlit Cloud viene installato automaticamente tramite `packages.txt`.
 
 1. Clona il repository e installa le dipendenze:
 
@@ -60,7 +60,7 @@ Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/), un progetto Supabas
    # GEMINI_MODEL = "models/gemini-3.6-flash"
    ```
 
-   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. `GEMINI_API_KEY` è facoltativa se compili i dati manualmente. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
+   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. Senza `GEMINI_API_KEY`, l'analisi automatica usa direttamente l'OCR, se Tesseract è installato. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
 
 3. Configura Supabase prima di avviare una nuova installazione. Nel SQL Editor esegui, nell'ordine:
 
@@ -100,6 +100,7 @@ node --test tests/sql/security.test.mjs
 | `app.py` | Interfaccia, caricamento, revisione e storico |
 | `domain.py` | Validazione dei dati e preparazione delle immagini |
 | `extraction.py` | Estrazione dei dati con Gemini |
+| `ocr_fallback.py` e `packages.txt` | OCR locale e dipendenze di sistema |
 | `security.py` | Configurazione e sessioni utente |
 | `repository.py` | Salvataggio di rimborsi e documenti |
 | `supabase/` | Migrazione e verifiche del database |
