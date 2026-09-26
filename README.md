@@ -1,184 +1,106 @@
-Caro Voli Sicilia — archivio personale di ricevute e documenti di viaggio
-=====================================================================
+# ✈️ Caro Voli Sicilia: organizza i documenti per il tuo rimborso voli
 
-L'app permette di conservare la ricevuta appena compri un volo e di aggiungere la
-carta d'imbarco quando diventa disponibile. Gemini può leggere i documenti e
-proporre i dati; puoi sempre compilare manualmente. I dati e i PDF vengono
-archiviati su Supabase. La presentazione della domanda sul portale Caro Voli
-rimane manuale: l'app non invia richieste al portale e non calcola il rimborso.
+Un'applicazione web sviluppata con **Streamlit** per conservare ricevute e carte d'imbarco, estrarre i dati dei voli con **Gemini** e preparare i documenti necessari alla richiesta di rimborso sul portale Caro Voli Sicilia.
 
-Il deploy precedente è raggiungibile su
-[Streamlit Community Cloud](https://rimborso-voli-sicilia.streamlit.app/).
-Le modifiche locali non aggiornano automaticamente il deploy.
+La domanda sul portale resta a carico dell'utente: l'app **non invia richieste di rimborso** e non ne calcola l'importo.
 
-**Come usare il nuovo flusso**
+## 🌐 Usa l'app online
 
-1. Accedi e apri «Nuova richiesta».
-2. Carica la ricevuta in JPG/JPEG/PNG. La carta d'imbarco è facoltativa.
-3. Se vuoi, premi «Leggi i nuovi documenti con AI». Solo questa azione invia le
-   immagini selezionate a Google Gemini. Controlla sempre il costo della singola
-   tratta: una prenotazione può contenere più voli o passeggeri.
-4. Correggi i campi e salva. Puoi lasciare vuoti quelli che non conosci; i valori
-   presenti devono essere validi. La ricevuta è sempre necessaria.
-5. In «Storico rimborsi», apri la richiesta e premi «Modifica / aggiungi carta
-   d'imbarco». Puoi correggere tutti i dati e aggiungere o sostituire i documenti.
-   Senza un nuovo upload, i documenti precedenti vengono conservati.
-6. «Prepara download» recupera un singolo documento; «Scarica» lo scarica. Lo
-   storico non scarica più tutti i PDF automaticamente.
+L'app è disponibile su [**rimborso-voli-sicilia.streamlit.app**](https://rimborso-voli-sicilia.streamlit.app/). Non occorre installare nulla: basta creare un account e accedere.
 
-«Documenti completi» indica solo che ricevuta e carta d'imbarco sono presenti,
-non l'approvazione o l'invio del rimborso. Il totale delle spese include tutte le
-richieste dell'utente, anche oltre la pagina visualizzata, escludendo gli importi
-mancanti o non validi. Lo storico mostra 20 richieste per pagina.
+Ogni utente può consultare solo i propri rimborsi e documenti. I dati sono archiviati su Supabase, con controlli di accesso applicati sia al database sia ai file.
 
-**Aggiornamento obbligatorio di Supabase prima del deploy**
+## Il problema
 
-La nuova versione richiede una migrazione: non basta sostituire `app.py`.
-La migrazione non è stata eseguita sul progetto cloud da questo workspace.
+La ricevuta di acquisto è disponibile subito, mentre la carta d'imbarco arriva spesso solo poco prima del volo. Nel frattempo possono passare mesi: ritrovare la ricevuta, ricopiare i dati e preparare i PDF diventa scomodo.
 
-1. Conserva un backup del database e l'esportazione delle policy esistenti.
-   Nel SQL Editor, `supabase/preflight.sql` restituisce schema, policy, permessi
-   e conteggi senza leggere i singoli viaggi. Salva il risultato in un luogo
-   privato (per esempio `.supabase-backups/`, esclusa da Git). Questa fotografia
-   della configurazione non sostituisce un backup del database o dei PDF.
-2. Applica prima la migrazione in un progetto di staging. Nel SQL Editor esegui
-   `supabase/migrations/202609250001_requests_security.sql` con un account
-   amministratore del progetto.
-3. Esegui `supabase/verify_security.sql` e controlla che RLS sia attiva, il bucket
-   `pdf_rimborsi` sia privato e le policy restrittive siano presenti. Il file
-   segnala anche dati preesistenti da correggere, senza eliminarli.
-4. Prova con due account distinti: ricevuta iniziale, aggiunta carta d'imbarco,
-   modifica, download e cancellazione. Verifica che nessun account possa accedere
-   ai record o ai percorsi dell'altro, anche tramite API.
-5. Applica la migrazione al progetto di produzione, poi distribuisci il codice e
-   riavvia l'app. Il riavvio elimina i vecchi client globali dalla memoria.
+## Come funziona
 
-La migrazione è transazionale e ripetibile. Conserva gli ID esistenti, supporta
-sia ID UUID sia serial/bigserial e mantiene i vecchi percorsi dei documenti.
-Aggiunge `client_request_id` e `version`, rende facoltativi carta d'imbarco, date
-e costo, crea la funzione `richieste_summary()` e protegge identità e documenti.
-I nuovi inserimenti e aggiornamenti devono rispettare proprietà dei percorsi e
-validità degli importi. Le righe precedenti non conformi rimangono leggibili ma
-devono essere corrette quando vengono modificate.
+1. **Salva la ricevuta:** carica un'immagine JPG, JPEG o PNG della ricevuta di pagamento. La carta d'imbarco non è necessaria in questa fase.
+2. **Compila i dati:** inseriscili manualmente oppure usa Gemini per proporre le informazioni ricavate dai documenti. Le immagini vengono inviate a Gemini solo quando avvii l'analisi.
+3. **Controlla e correggi:** verifica sempre i dati proposti, in particolare il costo della singola tratta quando una prenotazione comprende più voli o passeggeri.
+4. **Completa in seguito:** quando ricevi la carta d'imbarco, apri il rimborso nello storico e aggiungila. Puoi anche modificare i dati o sostituire i documenti già caricati.
+5. **Scarica i PDF:** l'app prepara i documenti in formato PDF, pronti per essere utilizzati durante la compilazione sul portale.
 
-Le policy restrittive limitano anche eventuali policy permissive preesistenti.
-Le policy degli altri bucket non vengono rimosse. Altre policy *restrittive*
-già presenti possono invece continuare a negare operazioni legittime: vanno
-esaminate nell'ambiente reale. L'app precedente potrebbe non riuscire più a
-sovrascrivere file durante l'intervallo fra migrazione e nuovo deploy; pianifica
-l'aggiornamento di conseguenza.
+Nello storico, **«Documenti completi»** significa soltanto che sono presenti sia la ricevuta sia la carta d'imbarco: non indica che la domanda sia stata inviata o approvata.
 
-**Configurazione locale e deploy**
+## Tecnologie utilizzate
 
-Usa Python 3.14 e `uv`. `pyproject.toml` e `uv.lock` sono la fonte delle dipendenze;
-`requirements.txt` è esportato dal lockfile per gli ambienti che usano pip.
+- **Interfaccia e logica applicativa:** [Streamlit](https://streamlit.io/) e Python
+- **Estrazione dei dati:** API Gemini, con possibilità di compilazione manuale
+- **Database e autenticazione:** PostgreSQL e [Supabase](https://supabase.com/)
+- **Archivio documenti:** Supabase Storage
+- **Elaborazione delle immagini e PDF:** Pillow e `img2pdf`
+- **Hosting:** Streamlit Community Cloud
 
-```powershell
-uv sync --locked
-uv run streamlit run app.py
-```
+## Privacy e sicurezza
 
-Crea `.streamlit/secrets.toml` localmente oppure configura gli stessi valori nei
-Secrets di Streamlit Community Cloud:
+L'accesso richiede un account. Le policy **Row Level Security (RLS)** limitano le operazioni sui rimborsi al rispettivo proprietario; il bucket dei documenti è privato e consente l'accesso ai file dell'utente autenticato. L'app usa un client Supabase distinto per sessione, valida dati e immagini caricati e non richiede chiavi Supabase privilegiate.
 
-```toml
-SUPABASE_URL = "https://IL-PROGETTO.supabase.co"
-SUPABASE_KEY = "LA-CHIAVE-PUBLISHABLE-O-ANON"
-GEMINI_API_KEY = "LA-CHIAVE-GEMINI"
-GEMINI_MODEL = "models/gemini-3.6-flash" # facoltativo
-```
+L'analisi con Gemini è facoltativa. Se la usi, controlla il risultato prima di salvarlo: l'estrazione automatica può commettere errori o non trovare alcuni campi.
 
-La chiave Supabase deve essere una **publishable** (`sb_publishable_...`) oppure
-la vecchia chiave JWT **anon**. Le chiavi `service_role` e `sb_secret_...` vengono
-rifiutate perché non sono adatte a questo modello di autorizzazione.
-La chiave Gemini è necessaria solo per l'analisi, non per salvare manualmente.
-Non inserire credenziali nel codice o nei commit. `.gitignore` esclude i secrets,
-ma include `.streamlit/config.toml`, che mantiene CORS/XSRF attivi e limita gli
-upload a 10 MB per file. Il limite applicativo è inoltre 12 megapixel per immagine.
+## 💻 Esegui l'app in locale
 
-Per rigenerare i requirements dopo un aggiornamento deliberato del lockfile:
+Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/), un progetto Supabase configurato e, solo se vuoi usare l'analisi automatica, una chiave API Gemini.
 
-```powershell
-uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-txt --output-file requirements.txt
-```
+1. Clona il repository e installa le dipendenze:
 
-**Protezione dei dati implementata**
+   ```bash
+   git clone https://github.com/simone-cavallaro/rimborso_voli.git
+   cd rimborso_voli
+   uv sync --locked
+   ```
 
-- Un client Supabase e uno storage di autenticazione distinti per sessione;
-  identità verificata sul server e stato locale ripulito al logout.
-- Query di lettura, modifica, cancellazione e recupero documenti filtrate per
-  proprietario, oltre alle policy RLS del database e dello storage.
-- Percorsi con UUID, upload senza sovrascrittura e controllo della versione prima
-  di applicare modifiche simultanee. I metadati del volo non determinano i nomi.
-- Ripetizione sicura della creazione tramite `client_request_id`; recupero di
-  alcuni casi in cui il server salva ma la risposta di rete viene persa.
-- Sostituzione del collegamento al documento solo dopo un upload riuscito;
-  rimozione dei vecchi file solo dopo il salvataggio e se non sono più referenziati.
-  Sono protetti anche i file condivisi tra duplicati creati dalla vecchia versione.
-- Date, prezzi e risposta AI validati; errori non convertiti silenziosamente in
-  zero. Il risultato AI viene invalidato quando cambiano i file caricati.
-- Verifica del formato reale delle immagini, limite di dimensioni, rotazione EXIF
-  e ricodifica dei pixel prima della conversione PDF: metadati e contenuti
-  aggiunti in coda al file originale non vengono conservati.
-- SDK Google `google-genai`, schema JSON, limite di output, timeout, chiamate a
-  strumenti disabilitate e istruzioni per ignorare comandi contenuti nei documenti.
-- Dettagli delle eccezioni dei provider non mostrati agli utenti né inseriti nei
-  log applicativi; nei log compaiono operazione e classe dell'errore.
+2. Crea il file `.streamlit/secrets.toml`:
 
-La sicurezza del deploy dipende anche da impostazioni esterne non modificabili
-dal codice locale: conferma email e protezioni anti-abuso di Supabase Auth,
-password policy, quote/budget Gemini, HTTPS e accessi amministrativi ai progetti.
-Configura queste impostazioni prima di aprire il servizio ad altri utenti.
-La pausa di 15 secondi tra analisi è locale alla sessione e **non** sostituisce un
-limite centralizzato per account o un limite di spesa del provider.
+   ```toml
+   SUPABASE_URL = "https://IL-TUO-PROGETTO.supabase.co"
+   SUPABASE_KEY = "LA-TUA-CHIAVE-PUBLISHABLE"
+   GEMINI_API_KEY = "LA-TUA-CHIAVE-GEMINI"
+   # GEMINI_MODEL = "models/gemini-3.6-flash"
+   ```
 
-Database e Storage non condividono una transazione. In caso di guasto persistente
-o arresto del processo possono rimanere file orfani; l'app prova a ripulirli e
-privilegia la conservazione dei documenti quando l'esito del salvataggio è incerto.
-La bonifica operativa deve confrontare i file con tutti i riferimenti correnti
-prima di cancellare. Non viene eseguita una cancellazione massiva automatica.
+   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. `GEMINI_API_KEY` è facoltativa se compili i dati manualmente. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
 
-**Test riproducibili senza servizi cloud**
+3. Configura Supabase prima di avviare una nuova installazione. Nel SQL Editor esegui, nell'ordine:
 
-```powershell
+   - `supabase/preflight.sql` per controllare lo stato iniziale;
+   - `supabase/migrations/202609250001_requests_security.sql` per creare o aggiornare struttura e policy;
+   - `supabase/verify_security.sql` per verificare RLS, bucket privato e dati preesistenti.
+
+   Se aggiorni un progetto che contiene già rimborsi, conserva prima un backup del database e dei documenti. La migrazione non elimina automaticamente le richieste esistenti.
+
+4. Avvia l'app:
+
+   ```bash
+   uv run streamlit run app.py
+   ```
+
+Per pubblicarla su Streamlit Community Cloud, collega il repository, seleziona **Python 3.14**, configura gli stessi Secrets nella dashboard ed esegui prima la migrazione sul progetto Supabase collegato all'app.
+
+## Test
+
+I test Python non richiedono l'accesso ai servizi cloud:
+
+```bash
 uv run python -m unittest discover -s tests -v
 ```
 
-I test Python verificano validazione, immagini, sessioni, gestione degli errori,
-salvataggi concorrenti, paginazione e il percorso utente con Streamlit AppTest.
-Le API sono simulate. Un test usa il vero SDK Google con trasporto HTTP locale,
-senza richieste a Gemini.
+Per verificare anche gli scenari SQL serve Node.js:
 
-I test SQL usano PostgreSQL compilato in WebAssembly tramite PGlite. Sono solo
-strumenti di sviluppo: Node non serve per eseguire l'app.
-
-```powershell
+```bash
 npm --prefix tests/sql ci --ignore-scripts
 node --test tests/sql/security.test.mjs
 ```
 
-Gli scenari SQL applicano due volte la migrazione a uno schema nuovo e a uno
-schema preesistente con ID numerici. Verificano RLS, accesso anonimo, isolamento
-tra due utenti, policy permissive preesistenti, aggiornamenti concorrenti,
-aggregati privati e protezione dei documenti referenziati. Gli schemi di supporto
-Supabase sono simulati: questi test non sostituiscono la prova nel progetto cloud.
+## Struttura del progetto
 
-`tests/check_models.py` è un diagnostico separato: se eseguito esplicitamente,
-contatta Gemini con la chiave locale per elencare i modelli disponibili.
-
-**Organizzazione del codice**
-
-| File | Responsabilità |
-|---|---|
-| `app.py` | Login, caricamento, revisione, storico e modifica. |
-| `domain.py` | Validazione dei dati e preparazione delle immagini/PDF. |
-| `security.py` | Client per sessione, controlli di configurazione e log. |
-| `extraction.py` | Chiamata Gemini e schema della risposta. |
-| `repository.py` | Persistenza, proprietà dei record e gestione dei file. |
-| `supabase/` | Migrazione e verifiche del backend. |
-| `tests/` | Test Python, test SQL e diagnostico dei modelli. |
-
-Riferimenti tecnici: [sessioni e cache Streamlit](https://docs.streamlit.io/develop/api-reference/caching-and-state/st.cache_resource),
-[RLS Supabase](https://supabase.com/docs/guides/database/postgres/row-level-security),
-[accesso allo Storage](https://supabase.com/docs/guides/storage/security/access-control),
-[SDK Google GenAI](https://ai.google.dev/gemini-api/docs/migrate).
+| File o cartella | Contenuto |
+| --- | --- |
+| `app.py` | Interfaccia, caricamento, revisione e storico |
+| `domain.py` | Validazione dei dati e preparazione delle immagini |
+| `extraction.py` | Estrazione dei dati con Gemini |
+| `security.py` | Configurazione e sessioni utente |
+| `repository.py` | Salvataggio di rimborsi e documenti |
+| `supabase/` | Migrazione e verifiche del database |
+| `tests/` | Test dell'app e delle policy SQL |
