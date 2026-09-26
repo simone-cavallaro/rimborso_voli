@@ -49,5 +49,13 @@ def clear_session(state):
 
 
 def log_failure(operation, exc):
-    # Do not log exception text/tracebacks: providers may include tokens or documents.
-    logging.getLogger("rimborso_voli").warning("%s failed (%s)", operation, type(exc).__name__)
+    logger = logging.getLogger("rimborso_voli")
+    status_code = getattr(exc, "code", None)
+
+    if operation == "extract_documents" and type(status_code) is int and 400 <= status_code <= 599:
+        logger.warning(
+            "%s failed (%s, HTTP %d)",
+            operation, type(exc).__name__, status_code,
+        )
+    else:
+        logger.warning("%s failed (%s)", operation, type(exc).__name__)
