@@ -166,7 +166,7 @@ def extract_with_fallback(documents):
     if api_key:
         try:
             return extract(documents, api_key,
-                           st.secrets.get("GEMINI_MODEL", "models/gemini-3.6-flash")), "gemini"
+                           st.secrets.get("GEMINI_MODEL", "models/gemini-3.8-flash")), "gemini"
         except genai_errors.APIError as exc:
             if exc.code not in TEMPORARY_GEMINI_ERRORS:
                 raise

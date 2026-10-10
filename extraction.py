@@ -24,7 +24,7 @@ senza valuta o separatore delle migliaia. Aeroporti preferibilmente come codici 
 """
 
 
-def extract(documents, api_key, model_name="models/gemini-3.6-flash"):
+def extract(documents, api_key, model_name="models/gemini-3.8-flash"):
     parts = []
     for field, document in documents.items():
         if document:
