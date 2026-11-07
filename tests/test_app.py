@@ -5,10 +5,14 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+import httpx
 from PIL import Image
 from google.genai import errors as genai_errors
+from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit.testing.v1 import AppTest
 
+import extraction
+from domain import ValidationError
 from repository import RequestsRepository
 from tests.fakes import FakeClient, USER_A
 
@@ -43,9 +47,32 @@ class AppTests(unittest.TestCase):
     def click(self, label):
         next(button for button in self.app.button if button.label == label).click().run()
 
-    def test_receipt_only_create_then_boarding_added_from_history(self):
+    def goto_history(self):
+        self.app.radio[0].set_value("Storico rimborsi").run()
+
+    def add_receipt(self):
         self.uploads["new_receipt"] = image_upload()
         self.app.run()
+
+    def add_receipt_with_manual_value(self):
+        self.uploads["new_receipt"] = image_upload()
+        self.app.run()
+        self.app.text_input(key="new_field_numero_volo").set_value("KEPT123").run()
+
+    def assert_manual_fields_preserved(self):
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "KEPT123")
+        self.assertEqual(self.client.rows, [])
+
+    def test_navigation_is_in_the_main_body_not_the_sidebar(self):
+        self.app.run()
+        self.assert_clean()
+        self.assertEqual([radio.label for radio in self.app.radio], ["Vai a"])
+        self.assertEqual(self.app.radio[0].value, "Nuova richiesta")
+        self.goto_history()
+        self.assertTrue(any("Storico rimborsi" in subheader.value for subheader in self.app.subheader))
+
+    def test_receipt_only_create_then_boarding_added_from_history(self):
+        self.add_receipt()
         self.assert_clean()
         self.app.text_input(key="new_field_numero_volo").set_value("AB123")
         self.click("Salva richiesta")
@@ -54,7 +81,7 @@ class AppTests(unittest.TestCase):
         receipt = self.client.rows[0]["pdf_ricevuta"]
         self.assertIsNone(self.client.rows[0]["pdf_imbarco"])
 
-        self.app.sidebar.radio[0].set_value("Storico rimborsi").run()
+        self.goto_history()
         self.assert_clean()
         self.assertEqual(self.client.bucket.downloads, 0)
         self.click("Modifica / aggiungi carta d'imbarco")
@@ -71,34 +98,302 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.bucket.downloads, 0)
 
     def test_file_change_clears_previous_extraction(self):
-        self.uploads["new_receipt"] = image_upload()
-        self.app.run()
-        with patch("extraction.extract", return_value={"numero_volo": "OLD123"}):
+        self.add_receipt()
+        with patch("extraction.extract", return_value={"numero_volo": "OLD123"}), \
+                patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OLD123")
         self.uploads["new_receipt"] = image_upload("red")
         self.app.run()
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "")
 
-    def test_failed_ai_still_allows_manual_saving(self):
-        self.uploads["new_receipt"] = image_upload()
-        self.app.run()
-        self.app.text_input(key="new_field_numero_volo").set_value("AB789").run()
-        error = genai_errors.ServerError(503, {"error": {"message": "secret-provider-details"}})
-        with patch("extraction.extract", side_effect=error):
+    def test_gemini_success_does_not_call_ocr_or_save(self):
+        self.add_receipt()
+        with patch("extraction.extract", return_value={"numero_volo": "GEM777"}), \
+                patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
-        self.assertNotIn("secret-provider-details", self.app.error[0].value)
-        self.assertIn("temporaneamente non disponibile", self.app.error[0].value)
-        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "AB789")
+        ocr.assert_not_called()
+        self.assert_clean()
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "GEM777")
+        self.assertTrue(any("Gemini" in success.value for success in self.app.success))
         self.assertEqual(self.client.rows, [])
+
+    def test_failed_ai_still_allows_manual_saving(self):
+        self.add_receipt_with_manual_value()
+        error = genai_errors.ServerError(503, {"error": {"message": "secret-provider-details"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local", return_value={}):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assertEqual(list(self.app.exception), [])
+        self.assertTrue(any("temporaneamente non disponibile" in warning.value for warning in self.app.warning))
+        self.assertTrue(any("compila i campi manualmente" in warning.value for warning in self.app.warning))
+        self.assert_manual_fields_preserved()
         self.click("Salva richiesta")
         self.assert_clean()
-        self.assertEqual(self.client.rows[0]["numero_volo"], "AB789")
+        self.assertEqual(self.client.rows[0]["numero_volo"], "KEPT123")
+
+    def test_missing_gemini_key_explains_ocr_fallback_without_api_call(self):
+        self.add_receipt()
+        self.app.secrets["GEMINI_API_KEY"] = ""
+        with patch("extraction.extract") as api, \
+                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR123"}):
+            self.click("Leggi i nuovi documenti con AI")
+        api.assert_not_called()
+        self.assert_clean()
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCR123")
+        self.assertTrue(any("non è configurata" in warning.value for warning in self.app.warning))
+        self.assertTrue(any("OCR locale" in warning.value for warning in self.app.warning))
+
+    def test_quota_error_is_a_distinct_category(self):
+        self.add_receipt()
+        error = genai_errors.ClientError(429, {"error": {"message": "quota-exhausted-secret-marker"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRQ1"}):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assert_clean()
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCRQ1")
+        self.assertTrue(any("Quota o limite del servizio" in warning.value for warning in self.app.warning))
+        self.assertFalse(any(warning.value == "Gemini è temporaneamente non disponibile: i dati sono stati letti con l'OCR locale. Riprova più tardi."
+                             for warning in self.app.warning))
+
+    def test_503_with_failed_ocr_keeps_both_diagnoses(self):
+        self.add_receipt_with_manual_value()
+        error = genai_errors.ServerError(503, {"error": {"message": "provider-raw-details"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("temporaneamente non disponibile", rendered)
+        self.assertIn("Anche l'OCR locale non è riuscito", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_network_error_with_failed_ocr_keeps_reason(self):
+        self.add_receipt_with_manual_value()
+        with patch("extraction.extract", side_effect=httpx.ConnectError("offline")), \
+                patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("non è raggiungibile", rendered)
+        self.assertIn("Anche l'OCR locale non è riuscito", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_non_string_gemini_model_falls_back_to_default(self):
+        import extraction
+        self.add_receipt()
+        self.app.secrets["GEMINI_MODEL"] = 12345
+        captured = {}
+        with patch("extraction.extract") as api:
+            def capture(documents, api_key, model_name=None):
+                captured["model"] = model_name
+                return {"numero_volo": "OK"}
+            api.side_effect = capture
+            self.click("Leggi i nuovi documenti con AI")
+        self.assert_clean()
+        self.assertEqual(captured["model"], extraction.DEFAULT_MODEL)
+
+    # --- Secrets: distinguish absence from malformed source (structured ids) ---
+
+    class _FakeSecrets:
+        def __init__(self, exc=None, values=None):
+            self.exc = exc
+            self.values = values
+
+        def get(self, key):
+            if self.exc is not None:
+                raise self.exc
+            return self.values.get(key)
+
+    def _settings_with(self, secrets):
+        import app as app_module
+        with patch("app.st", SimpleNamespace(secrets=secrets)):
+            return app_module.gemini_settings()
+
+    def test_no_secrets_found_and_plain_file_error_mean_absence(self):
+        no_file = StreamlitSecretNotFoundError(
+            "No secrets found. Valid paths for a secrets.toml file or secret directories are: {file_paths}",
+            file_paths="/a, /b", error_id="no-secrets-found")
+        self.assertEqual(self._settings_with(self._FakeSecrets(exc=no_file))[2], "absent")
+        self.assertEqual(self._settings_with(self._FakeSecrets(exc=FileNotFoundError("gone")))[2], "absent")
+
+    def test_malformed_secrets_id_is_a_distinct_blocking_mode(self):
+        malformed = StreamlitSecretNotFoundError(
+            "Error parsing secrets file at {path}: {error}",
+            path="/demo/secrets.toml", error="toml private-marker-toml-err",
+            error_id="failed-parsing-secrets-file")
+        api_key, model, mode = self._settings_with(self._FakeSecrets(exc=malformed))
+        self.assertIsNone(api_key)
+        self.assertEqual(mode, "malformed")
+        self.assertEqual(model, extraction.DEFAULT_MODEL)
+        invalid_path = StreamlitSecretNotFoundError(
+            "Invalid secrets path: {path}: path is not a .toml file or a directory",
+            path="/demo", error_id="invalid-secrets-path")
+        self.assertEqual(self._settings_with(self._FakeSecrets(exc=invalid_path))[2], "malformed")
+        unknown = StreamlitSecretNotFoundError("future id", error_id="not-yet-known-id")
+        self.assertEqual(self._settings_with(self._FakeSecrets(exc=unknown))[2], "malformed")
+
+    def test_configured_secrets_report_configured_mode(self):
+        secrets = self._FakeSecrets(values={"GEMINI_API_KEY": " k ", "GEMINI_MODEL": " models/demo "})
+        self.assertEqual(self._settings_with(secrets), ("k", "models/demo", "configured"))
+
+    def test_malformed_secrets_flow_shows_fixed_message_without_ocr_or_save(self):
+        self.add_receipt_with_manual_value()
+        malformed = StreamlitSecretNotFoundError(
+            "Error parsing secrets file at {path}: {error}",
+            path="/demo/.streamlit/secrets.toml", error="toml private-marker-toml-err",
+            error_id="failed-parsing-secrets-file")
+
+        class FakeSecretsStore:
+            """Synthetic structured source placed where AppTest installs st.secrets.
+
+            AppTest replaces the global st.secrets with a Secrets() instance
+            built from this module, so patching that class exercises the real
+            helper (exception included) inside the complete app run. SUPABASE
+            values pass through; the Gemini ones raise the structured error. No
+            real API call can occur: the analysis is blocked before extraction.
+            """
+
+            def __init__(self, *args, **kwargs):
+                self._secrets = None
+                self.raise_keys = ("GEMINI_API_KEY", "GEMINI_MODEL")
+
+            def __getitem__(self, key):
+                if key in self.raise_keys:
+                    raise malformed
+                return self._secrets[key]
+
+            def get(self, key, default=None):
+                if key in self.raise_keys:
+                    raise malformed
+                try:
+                    return self[key]
+                except KeyError:
+                    return default
+
+        with patch("streamlit.testing.v1.app_test.Secrets", FakeSecretsStore), \
+                patch("ocr_fallback.extract_local") as ocr, \
+                patch("extraction.extract", side_effect=RuntimeError("no api call expected")):
+            self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("impostazioni non leggibili", rendered)
+        self.assertNotIn("failed-parsing-secrets-file", rendered)
+        self.assertNotIn("toml private-marker", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_malformed_secrets_caption_shows_no_exception_details(self):
+        malformed = StreamlitSecretNotFoundError(
+            "Error parsing secrets file at {path}: {error}",
+            path="/demo/.streamlit/secrets.toml", error="toml private-marker-caption-err",
+            error_id="failed-parsing-secrets-file")
+
+        class FakeSecretsStore:
+            def __init__(self, *args, **kwargs):
+                self._secrets = None
+                self.raise_keys = ("GEMINI_API_KEY",)
+
+            def __getitem__(self, key):
+                if key in self.raise_keys:
+                    raise malformed
+                return self._secrets[key]
+
+            def get(self, key, default=None):
+                if key in self.raise_keys:
+                    raise malformed
+                try:
+                    return self[key]
+                except KeyError:
+                    return default
+
+        with patch("streamlit.testing.v1.app_test.Secrets", FakeSecretsStore):
+            self.app.run()
+        captions = [element.value for element in self.app.caption]
+        self.assertTrue(any("configurazione malformata" in caption for caption in captions))
+        self.assertFalse(any("failed-parsing-secrets-file" in caption for caption in captions))
+
+    def test_permanent_auth_error_is_not_masked_as_ocr_success(self):
+        self.add_receipt_with_manual_value()
+        error = genai_errors.ClientError(401, {"error": {"message": "raw-provider-body-marker"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local") as ocr:
+            self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("configurazione o autorizzazione da verificare", rendered)
+        self.assertNotIn("raw-provider-body-marker", rendered)
+        self.assertFalse(self.app.warning)
+        self.assert_manual_fields_preserved()
+
+    def test_permanent_model_error_is_not_masked(self):
+        self.add_receipt_with_manual_value()
+        error = genai_errors.ClientError(404, {"error": {"message": "model-not-found-marker"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local") as ocr:
+            self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("modello o configurazione non accessibili da verificare", rendered)
+        self.assertNotIn("model-not-found-marker", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_permanent_request_error_is_not_masked(self):
+        self.add_receipt_with_manual_value()
+        error = genai_errors.ClientError(400, {"error": {"message": "bad request marker"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local") as ocr:
+            self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("configurazione o autorizzazione da verificare", rendered)
+        self.assertNotIn("bad request marker", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_network_error_falls_back_to_ocr(self):
+        self.add_receipt()
+        with patch("extraction.extract", side_effect=httpx.ConnectError("offline")), \
+                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR456"}):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assert_clean()
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCR456")
+        self.assertTrue(any("non è raggiungibile" in warning.value or "Impossibile raggiungere" in warning.value
+                            for warning in self.app.warning))
+
+    def test_invalid_gemini_response_falls_back_to_ocr(self):
+        self.add_receipt()
+        error = ValidationError("risposta non valida")
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR000"}):
+            self.click("Leggi i nuovi documenti con AI")
+        self.assert_clean()
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCR000")
+        self.assertTrue(any("dati validi" in warning.value for warning in self.app.warning))
+
+    def test_provider_details_never_reach_ui_or_log(self):
+        self.add_receipt()
+        error = genai_errors.ServerError(500, {"error": {"message": "raw-500-provider-secret-marker"}})
+        with patch("extraction.extract", side_effect=error), \
+                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRX1"}), \
+                self.assertLogs("rimborso_voli", level="WARNING") as logs:
+            self.click("Leggi i nuovi documenti con AI")
+        self.assert_clean()
+        rendered = " ".join(item.value for item in self.app.warning)
+        self.assertNotIn("raw-500-provider-secret-marker", rendered)
+        joined = " ".join(logs.output)
+        self.assertNotIn("raw-500-provider-secret-marker", joined)
+        self.assertIn("extract_documents failed (ServerError, HTTP 500)", joined)
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCRX1")
+        self.assertEqual(self.client.rows, [])
 
     def test_invalid_cost_blocks_save_without_upload(self):
-        self.uploads["new_receipt"] = image_upload()
-        self.app.run()
+        self.add_receipt()
         self.app.text_input(key="new_field_costo_tratta").set_value("NaN")
         self.click("Salva richiesta")
         self.assertTrue(self.app.error)
@@ -109,7 +404,7 @@ class AppTests(unittest.TestCase):
         repo = RequestsRepository(self.client, USER_A)
         row, _ = repo.create({}, {"pdf_ricevuta": SimpleNamespace(pdf=b"%PDF-test")}, str(uuid4()))
         self.app.run()
-        self.app.sidebar.radio[0].set_value("Storico rimborsi").run()
+        self.goto_history()
         self.assertEqual(self.client.bucket.downloads, 0)
         delete = next(button for button in self.app.button if button.label == "Elimina richiesta")
         self.assertTrue(delete.disabled)
@@ -121,8 +416,10 @@ class AppTests(unittest.TestCase):
         self.assert_clean()
         self.assertEqual(self.client.rows, [])
 
-    def test_logout_clears_sensitive_state(self):
+    def test_logout_from_main_body_clears_sensitive_state(self):
         self.app.run()
+        buttons = [button.label for button in self.app.button]
+        self.assertIn("Esci", buttons)
         self.app.session_state["download"] = (1, "pdf_ricevuta", b"private")
         self.click("Esci")
         self.assertNotIn("user_id", self.app.session_state)

@@ -10,6 +10,8 @@ L'app è disponibile su [**rimborso-voli-sicilia.streamlit.app**](https://rimbor
 
 Ogni utente può consultare solo i propri rimborsi e documenti. I dati sono archiviati su Supabase, con controlli di accesso applicati sia al database sia ai file.
 
+L'interfaccia è ottimizzata anche per lo smartphone: caricamenti uno sotto l'altro, anteprime a larghezza piena, pulsanti estesi e navigazione «Nuova richiesta» / «Storico rimborsi» direttamente nel corpo della pagina, insieme al pulsante «Esci». Nessun menu nascosto da aprire su telefono.
+
 ## Il problema
 
 La ricevuta di acquisto è disponibile subito, mentre la carta d'imbarco arriva spesso solo poco prima del volo. Nel frattempo possono passare mesi: ritrovare la ricevuta, ricopiare i dati e preparare i PDF diventa scomodo.
@@ -17,7 +19,7 @@ La ricevuta di acquisto è disponibile subito, mentre la carta d'imbarco arriva 
 ## Come funziona
 
 1. **Salva la ricevuta:** carica un'immagine JPG, JPEG o PNG della ricevuta di pagamento. La carta d'imbarco non è necessaria in questa fase.
-2. **Compila i dati:** inseriscili manualmente oppure avvia l'analisi automatica. L'app prova Gemini se configurato e, se il servizio è temporaneamente indisponibile, usa l'OCR locale. Le immagini vengono inviate a Gemini solo quando avvii l'analisi.
+2. **Compila i dati:** inseriscili manualmente oppure avvia l'analisi automatica. L'app usa sempre Gemini come motore principale. L'OCR locale viene usato solo nei casi previsti: Gemini non configurato, errore temporaneo del servizio, quota o limite del servizio raggiunto, errore di rete o risposta non valida. Per un errore di configurazione, autorizzazione o modello l'analisi si interrompe, mostra un messaggio fisso e resta la compilazione manuale: nessun errore permanente viene trasformato in un risultato OCR. Le immagini vengono inviate a Gemini solo quando avvii l'analisi.
 3. **Controlla e correggi:** verifica sempre i dati proposti, in particolare il costo della singola tratta quando una prenotazione comprende più voli o passeggeri.
 4. **Completa in seguito:** quando ricevi la carta d'imbarco, apri il rimborso nello storico e aggiungila. Puoi anche modificare i dati o sostituire i documenti già caricati.
 5. **Scarica i PDF:** l'app prepara i documenti in formato PDF, pronti per essere utilizzati durante la compilazione sul portale.
@@ -57,10 +59,12 @@ Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supaba
    SUPABASE_URL = "https://IL-TUO-PROGETTO.supabase.co"
    SUPABASE_KEY = "LA-TUA-CHIAVE-PUBLISHABLE"
    GEMINI_API_KEY = "LA-TUA-CHIAVE-GEMINI"
-   # GEMINI_MODEL = "models/gemini-3.6-flash"
+   # GEMINI_MODEL = "models/gemini-3.8-flash"
    ```
 
-   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. Senza `GEMINI_API_KEY`, l'analisi automatica usa direttamente l'OCR, se Tesseract è installato. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
+   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. `GEMINI_MODEL` è facoltativo: il valore predefinito è `models/gemini-3.8-flash`. Senza `GEMINI_API_KEY`, l'analisi automatica usa direttamente l'OCR (se Tesseract è installato) e l'app lo segnala chiaramente. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
+
+   Se l'analisi continua a usare l'OCR, controlla il messaggio mostrato dall'app: indica se la configurazione manca, se il servizio è temporaneamente non disponibile, se è stata raggiunta una quota o un limite, o se si è verificato un errore di rete o una risposta non valida. Se l'analisi si interrompe con un errore di configurazione, autorizzazione o modello, verifica le impostazioni indicate in questa sezione. In pagina è riportato solo se l'analisi è configurata: la connessione reale viene verificata soltanto all'avvio dell'analisi.
 
 3. Configura Supabase prima di avviare una nuova installazione. Nel SQL Editor esegui, nell'ordine:
 
