@@ -1,4 +1,4 @@
-"""Conservative, offline OCR fallback for temporarily unavailable Gemini calls."""
+"""Conservative, offline OCR fallback for temporarily unavailable Groq calls."""
 
 from datetime import date
 from io import BytesIO

@@ -2,16 +2,15 @@ import time
 from hashlib import sha256
 from uuid import uuid4
 
-import httpx
+import groq
 import streamlit as st
-from google.genai import errors as genai_errors
 from streamlit.errors import StreamlitSecretNotFoundError
 
 from domain import (
     FIELDS, MAX_UPLOAD_BYTES, ValidationError, display_amount, display_date,
     normalize_fields, plain_label, prepare_document,
 )
-from extraction import DEFAULT_MODEL, extract
+from extraction import DEFAULT_MODEL, ConfigurationError, InputNotSendable, extract
 import ocr_fallback
 from repository import ConflictError, RequestsRepository, UncertainWriteError
 from security import clear_session, log_failure, session_client
@@ -23,14 +22,13 @@ LABELS = {
     "data_acquisto": "Data di acquisto (gg/mm/aaaa)", "data_volo": "Data del volo (gg/mm/aaaa)",
     "costo_tratta": "Costo della singola tratta (€)",
 }
-TEMPORARY_GEMINI_CODES = (408, 500, 502, 503, 504)
-NETWORK_ERRORS = (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.TransportError)
+TEMPORARY_CODES = (408, 500, 502, 503, 504)
 # Only the categories with a documented OCR fallback explain it to the user.
 # 429 is a category of its own: a service quota or rate limit may have been
 # reached, so it is never reported as a generic "temporarily unavailable".
 OCR_FALLBACK_MESSAGES = {
-    "not_configured": "L'analisi AI (Gemini) non è configurata: i dati sono stati letti con l'OCR locale.",
-    "temporary": "Gemini è temporaneamente non disponibile: i dati sono stati letti con l'OCR locale. Riprova più tardi.",
+    "not_configured": "L'analisi AI (Groq) non è configurata: i dati sono stati letti con l'OCR locale.",
+    "temporary": "Groq è temporaneamente non disponibile: i dati sono stati letti con l'OCR locale. Riprova più tardi.",
     "quota": "Quota o limite del servizio di analisi raggiunto: i dati sono stati letti con l'OCR locale. Riprova più tardi.",
     "network": "Impossibile raggiungere il servizio di analisi: i dati sono stati letti con l'OCR locale. Controlla la connessione e riprova.",
     "response": "Il servizio di analisi non ha restituito dati validi: i dati sono stati letti con l'OCR locale.",
@@ -50,6 +48,7 @@ PERMANENT_MESSAGES = {
     "model": "Analisi AI non eseguita: modello o configurazione non accessibili da verificare. Compila i campi manualmente o riprova più tardi.",
     "unclassified": "Analisi AI non riuscita (errore non classificato). Compila i campi manualmente o riprova più tardi.",
     "malformed_configuration": "Analisi AI non eseguita: impostazioni non leggibili (configurazione malformata). Verifica le impostazioni indicate nel README, poi riprova.",
+    "input_not_sendable": "Analisi AI non eseguita: i documenti sono ancora troppo grandi per l'invio. Riduci le dimensioni delle immagini o compila i campi manualmente.",
 }
 
 # Streamlit 1.63.0: StreamlitSecretNotFoundError extends FileNotFoundError and
@@ -67,7 +66,7 @@ _MALFORMED_SECRETS_IDS = (
 )
 
 
-def gemini_settings():
+def groq_settings():
     """Return (api_key, model, mode) from Streamlit secrets.
 
     mode is "configured", "absent" or "malformed". Absence keeps the
@@ -76,12 +75,12 @@ def gemini_settings():
     text into the application.
     """
     try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        model = st.secrets.get("GEMINI_MODEL")
+        api_key = st.secrets.get("GROQ_API_KEY")
+        model = st.secrets.get("GROQ_MODEL")
     except StreamlitSecretNotFoundError as exc:
         error_id = getattr(exc, "error_id", None)
         if error_id != "no-secrets-found":
-            log_failure("gemini_settings", exc)
+            log_failure("groq_settings", exc)
             return None, DEFAULT_MODEL, "malformed"
         api_key, model = None, None
     except FileNotFoundError:
@@ -92,11 +91,11 @@ def gemini_settings():
 
 
 def api_error_reason(exc):
-    """Map an APIError to a fixed, safe category (no diagnosis beyond the code)."""
-    code = getattr(exc, "code", None)
+    """Map an APIStatusError to a fixed, safe category (no diagnosis beyond the code)."""
+    code = getattr(exc, "status_code", None)
     if code == 429:
         return "quota"
-    if code in TEMPORARY_GEMINI_CODES:
+    if code in TEMPORARY_CODES:
         return "temporary"
     if code == 404:
         return "model"
@@ -115,11 +114,11 @@ def fail(operation, exc):
 
 def fail_extraction(exc):
     log_failure("extract_documents", exc)
-    code = getattr(exc, "code", None)
+    code = getattr(exc, "status_code", None)
     if isinstance(exc, ValidationError):
         st.error(str(exc))
-    elif isinstance(exc, genai_errors.APIError) and (code in TEMPORARY_GEMINI_CODES or code == 429):
-        st.error("Gemini è temporaneamente non disponibile. Nessun dato è stato salvato: riprova più tardi o compila i campi manualmente.")
+    elif isinstance(exc, groq.APIStatusError) and (code in TEMPORARY_CODES or code == 429):
+        st.error("Il servizio di analisi è temporaneamente non disponibile. Nessun dato è stato salvato: riprova più tardi o compila i campi manualmente.")
     else:
         st.error("L'analisi AI non è riuscita. Nessun dato è stato salvato: puoi riprovare o compilare i campi manualmente.")
 
@@ -241,20 +240,21 @@ def set_editor_values(prefix, values):
 
 
 def analyze_documents(documents):
-    """Run Gemini, then OCR only in the documented fallback cases.
+    """Run Groq, then OCR only in the documented fallback cases.
 
     Returns (values, source, reason):
-    - ("gemini", values, None): Gemini succeeded.
-    - ("ocr", values, reason): a documented Gemini failure triggered the OCR.
+    - ("groq", values, None): Groq succeeded.
+    - ("ocr", values, reason): a documented Groq failure triggered the OCR.
     - ("ocr_failed", None, reason): same as above, but the OCR failed too; the
-      Gemini reason is preserved so the diagnosis is never lost.
-    - ("blocked", None, reason): a permanent request/configuration/model error;
-      no OCR fallback is attempted and no automatic diagnosis is invented.
+      Groq reason is preserved so the diagnosis is never lost.
+    - ("blocked", None, reason): a permanent request/configuration/model error
+      or an input that cannot be sent; no OCR fallback is attempted and no
+      automatic diagnosis is invented.
 
-    Unexpected exceptions (bugs) propagate; only the documented Gemini failure
+    Unexpected exceptions (bugs) propagate; only the documented Groq failure
     modes are handled.
     """
-    api_key, model, mode = gemini_settings()
+    api_key, model, mode = groq_settings()
     if mode == "malformed":
         return None, "blocked", "malformed_configuration"
     if not api_key:
@@ -265,17 +265,27 @@ def analyze_documents(documents):
             return None, "ocr_failed", "not_configured"
     reason = None
     try:
-        return extract(documents, api_key, model), "gemini", None
-    except genai_errors.APIError as exc:
+        return extract(documents, api_key, model), "groq", None
+    except groq.APIStatusError as exc:
         reason = api_error_reason(exc)
         log_failure("extract_documents", exc)
         if reason in PERMANENT_MESSAGES:
             return None, "blocked", reason
-    except NETWORK_ERRORS as exc:
+    except groq.APIConnectionError as exc:
         reason = "network"
         log_failure("extract_documents", exc)
+    except ConfigurationError as exc:
+        # Local configuration problems (for example refused custom headers)
+        # are not provider errors: block the analysis with the fixed message.
+        log_failure("extract_documents", exc)
+        return None, "blocked", "configuration"
+    except InputNotSendable as exc:
+        # Oversized input never reaches the network: it must not cause an
+        # OCR fallback with a fake "invalid response" reason.
+        log_failure("extract_documents", exc)
+        return None, "blocked", "input_not_sendable"
     except ValidationError as exc:
-        # A 200 response that is not valid JSON/fields is still a Gemini
+        # A 200 response that is not valid JSON/fields is still a Groq
         # failure: the local OCR can provide a best-effort fallback. This is
         # documented in the analysis notice and in the README.
         reason = "response"
@@ -295,7 +305,7 @@ def editor(prefix, initial, documents, changed, valid):
             for field, document in documents.items():
                 st.image(document.image, caption="Ricevuta" if field == "pdf_ricevuta" else "Carta d'imbarco",
                          width="stretch")
-    st.caption("L'analisi automatica è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Google Gemini, se configurato. Se Gemini non è configurato, temporaneamente non disponibile, vincolato da quota o limite, non raggiungibile o restituisce dati non validi, l'app prova l'OCR locale. In caso di errori di configurazione, autorizzazione o modello l'analisi si interrompe, ma resta la compilazione manuale. Verifica sempre i dati proposti, soprattutto il costo della singola tratta.")
+    st.caption("L'analisi automatica è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Groq, se configurato. Se Groq non è configurato, temporaneamente non disponibile, vincolato da quota o limite, non raggiungibile o restituisce dati non validi, l'app prova l'OCR locale. In caso di errori di configurazione, autorizzazione o modello l'analisi si interrompe, ma resta la compilazione manuale. Verifica sempre i dati proposti, soprattutto il costo della singola tratta.")
     if st.button("Leggi i nuovi documenti con AI", key=f"{prefix}_analyze", type="primary",
                  width="stretch", disabled=not documents or not valid):
         try:
@@ -308,16 +318,16 @@ def editor(prefix, initial, documents, changed, valid):
             if values:
                 merged = {**current, **{k: v for k, v in values.items() if v not in (None, "")}}
                 set_editor_values(prefix, merged)
-            if source == "gemini":
-                st.success("Analisi completata con Gemini. Controlla e correggi i dati prima di salvare.")
+            if source == "groq":
+                st.success("Analisi completata con Groq. Controlla e correggi i dati prima di salvare.")
             elif source == "ocr":
                 message = OCR_FALLBACK_MESSAGES.get(
-                    reason, "L'analisi Gemini non è riuscita: i dati sono stati letti con l'OCR locale. Controlla i campi con attenzione.")
+                    reason, "L'analisi Groq non è riuscita: i dati sono stati letti con l'OCR locale. Controlla i campi con attenzione.")
                 if not any(value not in (None, "") for value in values.values()):
                     message += " L'OCR locale non ha riconosciuto dati sufficientemente affidabili: compila i campi manualmente."
                 st.warning(message)
             elif source == "ocr_failed":
-                # Both engines failed: the Gemini reason and the OCR outcome
+                # Both engines failed: the Groq reason and the OCR outcome
                 # stay separated so no diagnosis is lost.
                 st.error(UNCERTAIN_OCR_MESSAGES.get(reason, PERMANENT_MESSAGES["unclassified"]))
                 st.error("Anche l'OCR locale non è riuscito: nessun dato è stato salvato. Compila i campi manualmente.")
@@ -467,11 +477,11 @@ def main():
         st.error("La piattaforma non è configurata correttamente. Contatta l'amministratore.")
         st.stop()
     user = authenticate(client)
-    api_key, _model, mode = gemini_settings()
+    api_key, _model, mode = groq_settings()
     if mode == "malformed":
         st.caption("Analisi AI: impostazioni non leggibili (configurazione malformata). Correggi le impostazioni indicate nel README; fino ad allora l'analisi resta disabilitata.")
     elif api_key:
-        st.caption("Analisi AI: Gemini configurato. Connessione e chiave vengono verificati solo quando avvii un'analisi.")
+        st.caption("Analisi AI: Groq configurato. Connessione e chiave vengono verificati solo quando avvii un'analisi.")
     else:
         st.caption("Analisi AI: non configurata. Con le immagini caricate puoi usare l'OCR locale, se il server lo fornisce.")
     account, logout = st.columns([3, 1])

@@ -1,53 +1,89 @@
 """Document extraction is optional: saving a receipt never depends on the AI."""
 
+import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
+from io import BytesIO
+import json
 import logging
-from google import genai
-from google.genai import types
+import os
 
-from domain import FIELDS, parse_extraction
+import groq
+from PIL import Image
 
-
-DEFAULT_MODEL = "models/gemini-3.8-flash"
-
-# google-genai 2.25.0 drives its retries with tenacity.before_sleep_log at
-# INFO level, interpolating the provider exception - which can include the
-# response body and structured details - directly into the emitted message
-# ("Retrying <fn> in ... seconds as it raised ServerError: 503 UNAVAILABLE.
-# {...provider body...}"). This is a privacy leak into whatever handler
-# (SDK logger, parent or root) is attached. Our application logs keep only
-# type/code/category via security.log_failure, so the SDK retry traces are
-# dropped at the logger source, before any handler can format or store them.
-# Every other SDK record is left untouched, and no logger level is changed.
-_SDK_LOGGER_NAME = "google_genai._api_client"
-_SDK_RETRY_TRACE_PREFIXES = ("Retrying ",)
-_sdk_log_guard_installed = False
+from domain import ValidationError, parse_extraction
 
 
-class _SdkRetryTraceFilter(logging.Filter):
-    """Drop only the interpolated retry-trace records of the SDK logger.
+DEFAULT_MODEL = "qwen/qwen3.8-27b"
+# The SDK resource path already contains /openai/v1, so the client base URL is
+# the documented API domain; the effective request URL is
+# https://api.groq.com/openai/v1/chat/completions.
+GROQ_BASE_URL = "https://api.groq.com"
+TIMEOUT_SECONDS = 45
+MAX_COMPLETION_TOKENS = 1500
+MAX_RESPONSE_BYTES = 1_000_000
+MAX_IMAGE_SIDE = 2048
+JPEG_QUALITY = 90
+MAX_PAYLOAD_BYTES = 19_000_000
 
-    tenacity already interpolated the exception (message, body, details) into
-    ``record.msg``, so the record must not reach any handler: removing args
-    and exc_info would not be enough when formatters render the message.
+
+class ConfigurationError(Exception):
+    """A local configuration problem; nothing was sent to any provider.
+
+    Never carries the offending environment content in its message.
     """
 
+
+class InputNotSendable(Exception):
+    """The prepared images do not fit the serialized request payload.
+
+    Raised before any network activity; distinct from the AI response
+    parsing ValidationError so the fallback logic cannot confuse the two.
+    """
+
+
+# The official SDK and its HTTP stack log request options, URLs, headers,
+# key material and exceptions (with exc_info) at DEBUG and INFO levels, and
+# GROQ_LOG can raise their verbosity, so emitted records could carry private
+# values. Application logs keep only type/status/category via
+# security.log_failure, therefore every record from these verified dependency
+# loggers is dropped at the logger source, before any handler can format or
+# store it - but only while a Groq request is running in the current context.
+# The boolean lives in a ContextVar: other threads and sessions keep logging
+# normally, and no logger level, handler or root state is ever modified.
+_FILTERED_LOGGERS = (
+    "groq", "groq._base_client", "groq._response",
+    "httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2",
+    "httpcore.proxy", "httpcore.socks",
+)
+_request_active = ContextVar("groq_request_active", default=False)
+
+
+class _GroqDependencyFilter(logging.Filter):
+    """Drop dependency records while a Groq request is active in this context."""
+
     def filter(self, record):
-        msg = record.msg
-        if isinstance(msg, str) and msg.startswith(_SDK_RETRY_TRACE_PREFIXES):
-            return False
-        return True
+        return not _request_active.get()
 
 
-def restrict_sdk_retry_log_records():
-    """Idempotently attach the retry-trace filter to the SDK logger."""
-    global _sdk_log_guard_installed
-    if _sdk_log_guard_installed:
-        return
-    logging.getLogger(_SDK_LOGGER_NAME).addFilter(_SdkRetryTraceFilter())
-    _sdk_log_guard_installed = True
+@contextmanager
+def _groq_request_scope():
+    token = _request_active.set(True)
+    try:
+        yield
+    finally:
+        _request_active.reset(token)
 
 
-restrict_sdk_retry_log_records()
+def restrict_dependency_logs():
+    """Idempotently attach the source-level filter to each dependency logger."""
+    for name in _FILTERED_LOGGERS:
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, _GroqDependencyFilter) for f in logger.filters):
+            logger.addFilter(_GroqDependencyFilter())
+
+
+restrict_dependency_logs()
 
 
 PROMPT = """Estrai dati per UNA tratta aerea dai documenti allegati.
@@ -68,37 +104,137 @@ senza valuta o separatore delle migliaia. Aeroporti preferibilmente come codici 
 """
 
 
-def extract(documents, api_key, model_name=DEFAULT_MODEL):
-    # The guard is also enforced here (not only at import) because Streamlit
-    # may re-execute modules and log handlers can change between runs.
-    restrict_sdk_retry_log_records()
-    model_name = model_name.strip() if isinstance(model_name, str) else ""
-    if not model_name:
-        model_name = DEFAULT_MODEL
-    parts = []
-    for field, document in documents.items():
-        if document:
-            parts.extend(["Ricevuta" if field == "pdf_ricevuta" else "Carta d'imbarco", document.image])
-    schema = {
-        "type": "OBJECT", "required": list(FIELDS),
-        "properties": {field: {"type": "STRING", "nullable": field.startswith("data_") or field == "costo_tratta"}
-                       for field in FIELDS},
-    }
-    with genai.Client(api_key=api_key, http_options=types.HttpOptions(
-        timeout=45_000, retry_options=types.HttpRetryOptions(
-            # 429 is deliberately excluded: a quota or rate limit must not be
-            # retried automatically. Retrying with a structured delay from the
-            # provider payload is documented as residual work.
-            attempts=3, initial_delay=1, max_delay=4,
-            http_status_codes=[408, 500, 502, 503, 504],
-        ),
-    )) as client:
-        response = client.models.generate_content(
-            model=model_name, contents=parts,
-            config=types.GenerateContentConfig(
-                system_instruction=PROMPT, response_mime_type="application/json",
-                response_schema=schema, max_output_tokens=4096,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
+def _reject_json_constant(_value):
+    raise ValueError("Constante JSON non standard")
+
+
+def _close_quietly(closable):
+    try:
+        closable.close()
+    except Exception:
+        pass
+
+
+def build_client(api_key):
+    """Production SDK client: fixed base URL, explicit arguments, one shot.
+
+    The base URL, the key and every option are passed explicitly, so
+    GROQ_BASE_URL and GROQ_API_KEY environment variables cannot override
+    them. GROQ_CUSTOM_HEADERS is refused before any SDK or transport object
+    exists: it could rewrite authentication or client identity. Its content
+    is never read or shown. No custom User-Agent, browser imitation, proxy
+    or IP change.
+    """
+    if "GROQ_CUSTOM_HEADERS" in os.environ:
+        raise ConfigurationError(
+            "Header personalizzati Groq non ammessi: rimuovi la variabile "
+            "GROQ_CUSTOM_HEADERS dall'ambiente."
         )
-    return parse_extraction(response.text)
+    return groq.Groq(
+        api_key=api_key,
+        base_url=GROQ_BASE_URL,
+        timeout=TIMEOUT_SECONDS,
+        max_retries=0,
+        http_client=groq.DefaultHttpxClient(follow_redirects=False),
+    )
+
+
+def _ai_image_copy(image):
+    """Return an independent JPEG copy prepared for the AI request.
+
+    Only copies are sent: archived documents and their previews are never
+    altered. The copy is resized proportionally to at most MAX_IMAGE_SIDE
+    per side and re-encoded as JPEG at JPEG_QUALITY.
+    """
+    copy = image.copy()
+    copy.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    if copy.mode != "RGB":
+        copy = copy.convert("RGB")
+    buffer = BytesIO()
+    copy.save(buffer, format="JPEG", quality=JPEG_QUALITY)
+    return buffer.getvalue()
+
+
+def build_payload(documents, model_name=DEFAULT_MODEL):
+    """Build the request payload from validated in-memory document copies.
+
+    At most two images (receipt and boarding pass) are included. The size
+    check serializes with ensure_ascii=True, which never underestimates the
+    bytes the SDK will actually send.
+    """
+    if not isinstance(model_name, str) or not model_name.strip():
+        model_name = DEFAULT_MODEL
+    else:
+        model_name = model_name.strip()
+    content = [{"type": "text", "text": PROMPT}]
+    for field in ("pdf_ricevuta", "pdf_imbarco"):
+        document = documents.get(field) if isinstance(documents, dict) else None
+        if not document:
+            continue
+        encoded = base64.b64encode(_ai_image_copy(document.image)).decode("ascii")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+            }
+        )
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": content}],
+        "response_format": {"type": "json_object"},
+        "max_completion_tokens": MAX_COMPLETION_TOKENS,
+    }
+    if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) >= MAX_PAYLOAD_BYTES:
+        raise InputNotSendable(
+            "I documenti sono ancora troppo grandi per l'invio. Riduci le "
+            "dimensioni delle immagini o compila i campi manualmente."
+        )
+    return payload
+
+
+def parse_completion(raw):
+    """Parse one Groq chat completion body already received in memory."""
+    invalid = "La risposta dell'analisi non è valida. Riprova o compila manualmente."
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_RESPONSE_BYTES:
+        raise ValidationError(invalid)
+    try:
+        document = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        raise ValidationError(invalid) from None
+    if not isinstance(document, dict):
+        raise ValidationError(invalid)
+    choices = document.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ValidationError(invalid)
+    if choices[0].get("finish_reason") == "length":
+        raise ValidationError(invalid)
+    message = choices[0].get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise ValidationError(invalid)
+    return parse_extraction(content)
+
+
+def extract(documents, api_key, model_name=DEFAULT_MODEL):
+    # The filters are also enforced here (not only at import) because the
+    # application framework may re-execute modules and log handlers can
+    # change between runs.
+    restrict_dependency_logs()
+    payload = build_payload(documents, model_name)
+    api_response = None
+    with _groq_request_scope():
+        client = None
+        try:
+            client = build_client(api_key)
+            api_response = client.chat.completions.with_raw_response.create(**payload)
+            content = api_response.read()
+        finally:
+            if client is not None:
+                _close_quietly(client)
+            if api_response is not None:
+                _close_quietly(api_response)
+    # Defensive: the SDK raises APIStatusError for every non-2xx response,
+    # including refused redirects; this branch cannot normally be reached.
+    if api_response.status_code != 200:
+        raise ValidationError("La risposta dell'analisi non è valida. Riprova o compila manualmente.")
+    return parse_completion(content)
