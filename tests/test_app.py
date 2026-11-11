@@ -5,9 +5,9 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+import groq
 import httpx
 from PIL import Image
-from google.genai import errors as genai_errors
 from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit.testing.v1 import AppTest
 
@@ -17,6 +17,19 @@ from repository import RequestsRepository
 from tests.fakes import FakeClient, USER_A
 
 ROOT = Path(__file__).resolve().parents[1]
+
+ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def groq_status_error(status, message="synthetic provider error"):
+    request = httpx.Request("POST", ENDPOINT)
+    response = httpx.Response(status, request=request)
+    return groq.APIStatusError(message, response=response, body=None)
+
+
+def groq_connection_error():
+    return groq.APIConnectionError(message="offline",
+                                   request=httpx.Request("POST", ENDPOINT))
 
 
 def image_upload(color="white"):
@@ -37,7 +50,7 @@ class AppTests(unittest.TestCase):
         self.addCleanup(self.client_patch.stop)
         self.addCleanup(self.upload_patch.stop)
         self.app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=15)
-        self.app.secrets.update(SUPABASE_URL="https://example.supabase.co", SUPABASE_KEY="sb_publishable_test", GEMINI_API_KEY="test")
+        self.app.secrets.update(SUPABASE_URL="https://example.supabase.co", SUPABASE_KEY="sb_publishable_test", GROQ_API_KEY="test")
         self.app.session_state["user_id"] = USER_A
 
     def assert_clean(self):
@@ -110,20 +123,20 @@ class AppTests(unittest.TestCase):
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "")
 
-    def test_gemini_success_does_not_call_ocr_or_save(self):
+    def test_groq_success_does_not_call_ocr_or_save(self):
         self.add_receipt()
-        with patch("extraction.extract", return_value={"numero_volo": "GEM777"}), \
+        with patch("extraction.extract", return_value={"numero_volo": "GRO777"}), \
                 patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assert_clean()
-        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "GEM777")
-        self.assertTrue(any("Gemini" in success.value for success in self.app.success))
+        self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "GRO777")
+        self.assertTrue(any("Groq" in success.value for success in self.app.success))
         self.assertEqual(self.client.rows, [])
 
     def test_failed_ai_still_allows_manual_saving(self):
         self.add_receipt_with_manual_value()
-        error = genai_errors.ServerError(503, {"error": {"message": "secret-provider-details"}})
+        error = groq_status_error(503, "secret-provider-details")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local", return_value={}):
             self.click("Leggi i nuovi documenti con AI")
@@ -135,9 +148,9 @@ class AppTests(unittest.TestCase):
         self.assert_clean()
         self.assertEqual(self.client.rows[0]["numero_volo"], "KEPT123")
 
-    def test_missing_gemini_key_explains_ocr_fallback_without_api_call(self):
+    def test_missing_groq_key_explains_ocr_fallback_without_api_call(self):
         self.add_receipt()
-        self.app.secrets["GEMINI_API_KEY"] = ""
+        self.app.secrets["GROQ_API_KEY"] = ""
         with patch("extraction.extract") as api, \
                 patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR123"}):
             self.click("Leggi i nuovi documenti con AI")
@@ -149,19 +162,19 @@ class AppTests(unittest.TestCase):
 
     def test_quota_error_is_a_distinct_category(self):
         self.add_receipt()
-        error = genai_errors.ClientError(429, {"error": {"message": "quota-exhausted-secret-marker"}})
+        error = groq_status_error(429, "quota-exhausted-secret-marker")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRQ1"}):
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCRQ1")
         self.assertTrue(any("Quota o limite del servizio" in warning.value for warning in self.app.warning))
-        self.assertFalse(any(warning.value == "Gemini è temporaneamente non disponibile: i dati sono stati letti con l'OCR locale. Riprova più tardi."
+        self.assertFalse(any(warning.value == "Groq è temporaneamente non disponibile: i dati sono stati letti con l'OCR locale. Riprova più tardi."
                              for warning in self.app.warning))
 
     def test_503_with_failed_ocr_keeps_both_diagnoses(self):
         self.add_receipt_with_manual_value()
-        error = genai_errors.ServerError(503, {"error": {"message": "provider-raw-details"}})
+        error = groq_status_error(503, "provider-raw-details")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
             self.click("Leggi i nuovi documenti con AI")
@@ -173,7 +186,7 @@ class AppTests(unittest.TestCase):
 
     def test_network_error_with_failed_ocr_keeps_reason(self):
         self.add_receipt_with_manual_value()
-        with patch("extraction.extract", side_effect=httpx.ConnectError("offline")), \
+        with patch("extraction.extract", side_effect=groq_connection_error()), \
                 patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
             self.click("Leggi i nuovi documenti con AI")
         self.assertEqual(list(self.app.exception), [])
@@ -182,10 +195,10 @@ class AppTests(unittest.TestCase):
         self.assertIn("Anche l'OCR locale non è riuscito", rendered)
         self.assert_manual_fields_preserved()
 
-    def test_non_string_gemini_model_falls_back_to_default(self):
+    def test_non_string_groq_model_falls_back_to_default(self):
         import extraction
         self.add_receipt()
-        self.app.secrets["GEMINI_MODEL"] = 12345
+        self.app.secrets["GROQ_MODEL"] = 12345
         captured = {}
         with patch("extraction.extract") as api:
             def capture(documents, api_key, model_name=None):
@@ -211,7 +224,7 @@ class AppTests(unittest.TestCase):
     def _settings_with(self, secrets):
         import app as app_module
         with patch("app.st", SimpleNamespace(secrets=secrets)):
-            return app_module.gemini_settings()
+            return app_module.groq_settings()
 
     def test_no_secrets_found_and_plain_file_error_mean_absence(self):
         no_file = StreamlitSecretNotFoundError(
@@ -237,7 +250,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self._settings_with(self._FakeSecrets(exc=unknown))[2], "malformed")
 
     def test_configured_secrets_report_configured_mode(self):
-        secrets = self._FakeSecrets(values={"GEMINI_API_KEY": " k ", "GEMINI_MODEL": " models/demo "})
+        secrets = self._FakeSecrets(values={"GROQ_API_KEY": " k ", "GROQ_MODEL": " models/demo "})
         self.assertEqual(self._settings_with(secrets), ("k", "models/demo", "configured"))
 
     def test_malformed_secrets_flow_shows_fixed_message_without_ocr_or_save(self):
@@ -253,13 +266,13 @@ class AppTests(unittest.TestCase):
             AppTest replaces the global st.secrets with a Secrets() instance
             built from this module, so patching that class exercises the real
             helper (exception included) inside the complete app run. SUPABASE
-            values pass through; the Gemini ones raise the structured error. No
+            values pass through; the Groq ones raise the structured error. No
             real API call can occur: the analysis is blocked before extraction.
             """
 
             def __init__(self, *args, **kwargs):
                 self._secrets = None
-                self.raise_keys = ("GEMINI_API_KEY", "GEMINI_MODEL")
+                self.raise_keys = ("GROQ_API_KEY", "GROQ_MODEL")
 
             def __getitem__(self, key):
                 if key in self.raise_keys:
@@ -295,7 +308,7 @@ class AppTests(unittest.TestCase):
         class FakeSecretsStore:
             def __init__(self, *args, **kwargs):
                 self._secrets = None
-                self.raise_keys = ("GEMINI_API_KEY",)
+                self.raise_keys = ("GROQ_API_KEY",)
 
             def __getitem__(self, key):
                 if key in self.raise_keys:
@@ -318,7 +331,7 @@ class AppTests(unittest.TestCase):
 
     def test_permanent_auth_error_is_not_masked_as_ocr_success(self):
         self.add_receipt_with_manual_value()
-        error = genai_errors.ClientError(401, {"error": {"message": "raw-provider-body-marker"}})
+        error = groq_status_error(401, "raw-provider-body-marker")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
@@ -332,7 +345,7 @@ class AppTests(unittest.TestCase):
 
     def test_permanent_model_error_is_not_masked(self):
         self.add_receipt_with_manual_value()
-        error = genai_errors.ClientError(404, {"error": {"message": "model-not-found-marker"}})
+        error = groq_status_error(404, "model-not-found-marker")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
@@ -345,20 +358,47 @@ class AppTests(unittest.TestCase):
 
     def test_permanent_request_error_is_not_masked(self):
         self.add_receipt_with_manual_value()
-        error = genai_errors.ClientError(400, {"error": {"message": "bad request marker"}})
-        with patch("extraction.extract", side_effect=error), \
+        for status in (400, 401, 403):
+            with self.subTest(status=status):
+                error = groq_status_error(status, f"bad request marker {status}")
+                self.app.session_state["last_analysis"] = -1000.0
+                with patch("extraction.extract", side_effect=error), \
+                        patch("ocr_fallback.extract_local") as ocr:
+                    self.click("Leggi i nuovi documenti con AI")
+                ocr.assert_not_called()
+                self.assertEqual(list(self.app.exception), [])
+                rendered = " ".join(item.value for item in self.app.error)
+                self.assertIn("configurazione o autorizzazione da verificare", rendered)
+                self.assertNotIn("bad request marker", rendered)
+                self.assert_manual_fields_preserved()
+
+    def test_oversized_input_blocks_analysis_without_ocr_or_call(self):
+        self.add_receipt_with_manual_value()
+        with patch("extraction.extract", side_effect=extraction.InputNotSendable()), \
+                patch("ocr_fallback.extract_local") as ocr:
+            self.click("Leggi i nuovi documenti con AI")
+        ocr.assert_not_called()
+        self.assertEqual(list(self.app.exception), [])
+        rendered = " ".join(item.value for item in self.app.error)
+        self.assertIn("troppo grandi per l'invio", rendered)
+        self.assertIn("compila i campi manualmente", rendered)
+        self.assertNotIn("risposta non valida", rendered)
+        self.assert_manual_fields_preserved()
+
+    def test_local_configuration_error_blocks_analysis_without_ocr(self):
+        self.add_receipt_with_manual_value()
+        with patch("extraction.extract", side_effect=extraction.ConfigurationError()), \
                 patch("ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
         rendered = " ".join(item.value for item in self.app.error)
         self.assertIn("configurazione o autorizzazione da verificare", rendered)
-        self.assertNotIn("bad request marker", rendered)
         self.assert_manual_fields_preserved()
 
     def test_network_error_falls_back_to_ocr(self):
         self.add_receipt()
-        with patch("extraction.extract", side_effect=httpx.ConnectError("offline")), \
+        with patch("extraction.extract", side_effect=groq_connection_error()), \
                 patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR456"}):
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()
@@ -366,7 +406,7 @@ class AppTests(unittest.TestCase):
         self.assertTrue(any("non è raggiungibile" in warning.value or "Impossibile raggiungere" in warning.value
                             for warning in self.app.warning))
 
-    def test_invalid_gemini_response_falls_back_to_ocr(self):
+    def test_invalid_groq_response_falls_back_to_ocr(self):
         self.add_receipt()
         error = ValidationError("risposta non valida")
         with patch("extraction.extract", side_effect=error), \
@@ -378,7 +418,7 @@ class AppTests(unittest.TestCase):
 
     def test_provider_details_never_reach_ui_or_log(self):
         self.add_receipt()
-        error = genai_errors.ServerError(500, {"error": {"message": "raw-500-provider-secret-marker"}})
+        error = groq_status_error(500, "raw-500-provider-secret-marker")
         with patch("extraction.extract", side_effect=error), \
                 patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRX1"}), \
                 self.assertLogs("rimborso_voli", level="WARNING") as logs:
@@ -388,7 +428,7 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("raw-500-provider-secret-marker", rendered)
         joined = " ".join(logs.output)
         self.assertNotIn("raw-500-provider-secret-marker", joined)
-        self.assertIn("extract_documents failed (ServerError, HTTP 500)", joined)
+        self.assertIn("extract_documents failed (APIStatusError, HTTP 500)", joined)
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCRX1")
         self.assertEqual(self.client.rows, [])
 

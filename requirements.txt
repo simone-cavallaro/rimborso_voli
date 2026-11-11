@@ -6,7 +6,7 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.15.1
     # via
-    #   google-genai
+    #   groq
     #   httpx
     #   starlette
     #   streamlit
@@ -28,18 +28,14 @@ click==8.5.0
     #   streamlit
     #   uvicorn
 cryptography==50.0.1
-    # via
-    #   google-auth
-    #   pyjwt
+    # via pyjwt
 deprecation==2.1.0
     # via
     #   postgrest
     #   storage3
 distro==1.9.0
-    # via google-genai
-google-auth==2.57.1
-    # via google-genai
-google-genai==2.25.0
+    # via groq
+groq==1.7.0
     # via rimborso-voli
 h11==0.16.0
     # via
@@ -55,7 +51,7 @@ httptools==0.8.0
     # via streamlit
 httpx==0.28.1
     # via
-    #   google-genai
+    #   groq
     #   postgrest
     #   storage3
     #   supabase
@@ -120,15 +116,11 @@ protobuf==5.29.6
     # via streamlit
 pyarrow==25.0.1
     # via streamlit
-pyasn1==0.6.4
-    # via pyasn1-modules
-pyasn1-modules==0.4.2
-    # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
 pydantic==2.13.5
     # via
-    #   google-genai
+    #   groq
     #   postgrest
     #   realtime
     #   storage3
@@ -150,10 +142,7 @@ referencing==0.37.0
     #   jsonschema
     #   jsonschema-specifications
 requests==2.34.2
-    # via
-    #   google-auth
-    #   google-genai
-    #   streamlit
+    # via streamlit
 rpds-py==2026.6.3
     # via
     #   jsonschema
@@ -161,7 +150,7 @@ rpds-py==2026.6.3
 six==1.17.0
     # via python-dateutil
 sniffio==1.3.1
-    # via google-genai
+    # via groq
 starlette==1.6.0
     # via streamlit
 storage3==2.31.0
@@ -176,15 +165,13 @@ supabase-auth==2.31.0
     # via supabase
 supabase-functions==2.31.0
     # via supabase
-tenacity==9.1.4
-    # via google-genai
 toml==0.10.2
     # via streamlit
 typing-extensions==4.16.0
     # via
     #   altair
     #   anyio
-    #   google-genai
+    #   groq
     #   pydantic
     #   pydantic-core
     #   realtime
@@ -202,7 +189,6 @@ watchdog==6.0.0 ; sys_platform != 'darwin'
     # via streamlit
 websockets==15.0.1
     # via
-    #   google-genai
     #   realtime
     #   streamlit
 yarl==1.24.5

@@ -50,7 +50,7 @@ def clear_session(state):
 
 def log_failure(operation, exc):
     logger = logging.getLogger("rimborso_voli")
-    status_code = getattr(exc, "code", None)
+    status_code = getattr(exc, "status_code", None)
 
     if operation == "extract_documents" and type(status_code) is int and 400 <= status_code <= 599:
         logger.warning(
