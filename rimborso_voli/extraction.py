@@ -11,7 +11,7 @@ import os
 import groq
 from PIL import Image
 
-from domain import ValidationError, parse_extraction
+from .domain import ValidationError, parse_extraction
 
 
 DEFAULT_MODEL = "qwen/qwen3.8-27b"
@@ -139,6 +139,20 @@ def build_client(api_key):
     )
 
 
+@contextmanager
+def request_response(client_factory, payload):
+    """Send exactly one request and always release the client and response."""
+    client = client_factory()
+    response = None
+    try:
+        response = client.chat.completions.with_raw_response.create(**payload)
+        yield response
+    finally:
+        if response is not None:
+            _close_quietly(response)
+        _close_quietly(client)
+
+
 def _ai_image_copy(image):
     """Return an independent JPEG copy prepared for the AI request.
 
@@ -221,20 +235,12 @@ def extract(documents, api_key, model_name=DEFAULT_MODEL):
     # change between runs.
     restrict_dependency_logs()
     payload = build_payload(documents, model_name)
-    api_response = None
     with _groq_request_scope():
-        client = None
-        try:
-            client = build_client(api_key)
-            api_response = client.chat.completions.with_raw_response.create(**payload)
-            content = api_response.read()
-        finally:
-            if client is not None:
-                _close_quietly(client)
-            if api_response is not None:
-                _close_quietly(api_response)
+        with request_response(lambda: build_client(api_key), payload) as response:
+            status = response.status_code
+            content = response.read()
     # Defensive: the SDK raises APIStatusError for every non-2xx response,
     # including refused redirects; this branch cannot normally be reached.
-    if api_response.status_code != 200:
+    if status != 200:
         raise ValidationError("La risposta dell'analisi non è valida. Riprova o compila manualmente.")
     return parse_completion(content)

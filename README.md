@@ -1,51 +1,26 @@
 # ✈️ Caro Voli Sicilia: organizza i documenti per il tuo rimborso voli
 
-Un'applicazione web sviluppata con **Streamlit** per conservare ricevute e carte d'imbarco, estrarre i dati dei voli con **Groq** e preparare i documenti necessari alla richiesta di rimborso sul portale Caro Voli Sicilia.
+Applicazione **Streamlit** per conservare ricevute e carte d'imbarco, estrarre i dati dei voli con **Groq** e preparare i PDF utili alla richiesta di rimborso sul portale Caro Voli Sicilia. La domanda resta a carico dell'utente: l'app **non invia richieste di rimborso** e non ne calcola l'importo.
 
-La domanda sul portale resta a carico dell'utente: l'app **non invia richieste di rimborso** e non ne calcola l'importo.
-
-## 🌐 Usa l'app online
-
-L'app è disponibile su [**rimborso-voli-sicilia.streamlit.app**](https://rimborso-voli-sicilia.streamlit.app/). Non occorre installare nulla: basta creare un account e accedere.
-
-Ogni utente può consultare solo i propri rimborsi e documenti. I dati sono archiviati su Supabase, con controlli di accesso applicati sia al database sia ai file.
-
-L'interfaccia «Mare e limoni» usa blu mediterraneo, fondo avorio e accenti limone, con widget nativi Streamlit. Il percorso «Nuova richiesta» è diviso in **Documenti** e **Dati del volo**, con caricamenti uno sotto l'altro e analisi facoltativa. La navigazione «Nuova richiesta» / «Storico richieste» e il pulsante «Esci» sono nel corpo della pagina. Lo storico mostra itinerario, data e stato dei documenti; se è vuoto, offre un pulsante per iniziare. Per svuotare una bozza o annullare le modifiche serve una conferma esplicita.
-
-I documenti della bozza restano nella sola sessione anche cambiando vista, con un'indicazione per ciascuno. Per sostituire un documento conservato devi prima premere «Rimuovi … dalla bozza»: il selettore ricompare senza la vecchia copia. In modifica questo non cancella i documenti già salvati. Per conservare i nuovi documenti nello storico devi salvare la richiesta. Reset, annullamento, salvataggio e uscita puliscono i documenti della relativa bozza. Un file non valido ricevuto dal server blocca salvataggio e analisi finché non viene rimosso o sostituito; un file rifiutato dal browser, per esempio perché oltre 10 MB, non arriva al server e non sostituisce alcun documento. Le azioni possono restare disponibili per gli altri documenti e dati presenti.
-
-## Il problema
-
-La ricevuta di acquisto è disponibile subito, mentre la carta d'imbarco arriva spesso solo poco prima del volo. Nel frattempo possono passare mesi: ritrovare la ricevuta, ricopiare i dati e preparare i PDF diventa scomodo.
+È disponibile su [**rimborso-voli-sicilia.streamlit.app**](https://rimborso-voli-sicilia.streamlit.app/). Ogni utente vede solo i propri rimborsi e documenti; dati e file sono protetti da Row Level Security e da un bucket privato su Supabase.
 
 ## Come funziona
 
-1. **Salva la ricevuta:** carica un'immagine JPG, JPEG o PNG della ricevuta di pagamento. La carta d'imbarco non è necessaria in questa fase.
-2. **Compila i dati:** inseriscili manualmente oppure avvia l'analisi automatica. L'app usa sempre Groq come motore principale. L'OCR locale viene usato solo nei casi previsti: Groq non configurato, errore temporaneo del servizio, quota o limite del servizio raggiunto, errore di rete o risposta non valida. Per un errore di configurazione, autorizzazione o modello l'analisi si interrompe, mostra un messaggio fisso e resta la compilazione manuale: nessun errore permanente viene trasformato in un risultato OCR. Le immagini vengono inviate a Groq solo quando avvii l'analisi, come copie ridotte (massimo 2048 pixel per lato, JPEG qualità 90).
-3. **Controlla e correggi:** verifica sempre i dati proposti, in particolare il costo della singola tratta quando una prenotazione comprende più voli o passeggeri.
-4. **Completa in seguito:** quando ricevi la carta d'imbarco, apri il rimborso nello storico e aggiungila. Puoi anche modificare i dati o sostituire i documenti già caricati.
-5. **Scarica i PDF:** l'app prepara i documenti in formato PDF, pronti per essere utilizzati durante la compilazione sul portale.
+1. **Salva la ricevuta:** carica un'immagine JPG, JPEG o PNG (massimo 10 MB). La carta d'imbarco è facoltativa in questa fase.
+2. **Compila i dati:** inseriscili manualmente oppure avvia l'analisi facoltativa. Al primo posto c'è Groq; l'OCR locale interviene solo se Groq non è configurato, è temporaneamente non disponibile, ha raggiunto una quota, non è raggiungibile o restituisce dati non validi. Errori di configurazione, autorizzazione o modello interrompono l'analisi e lasciano la compilazione manuale. Le immagini raggiungono Groq solo quando premi il pulsante, come copie ridotte (massimo 2048 pixel per lato, JPEG qualità 90).
+3. **Controlla e correggi:** verifica sempre i dati proposti, soprattutto il costo della singola tratta per prenotazioni con più voli o passeggeri.
+4. **Completa in seguito:** dallo storico puoi aggiungere la carta d'imbarco, modificare i dati o sostituire i documenti. «Documenti completi» indica solo la presenza di ricevuta e carta d'imbarco.
+5. **Scarica i PDF:** l'app prepara i documenti per la compilazione sul portale.
 
-Nello storico, **«Documenti completi»** significa soltanto che sono presenti sia la ricevuta sia la carta d'imbarco: non indica che la domanda sia stata inviata o approvata.
-
-## Tecnologie utilizzate
-
-- **Interfaccia e logica applicativa:** [Streamlit](https://streamlit.io/) e Python
-- **Estrazione dei dati:** API Groq tramite SDK ufficiale (`groq`), fallback OCR con Tesseract e compilazione manuale
-- **Database e autenticazione:** PostgreSQL e [Supabase](https://supabase.com/)
-- **Archivio documenti:** Supabase Storage
-- **Elaborazione delle immagini e PDF:** Pillow e `img2pdf`
-- **Hosting:** Streamlit Community Cloud
+I documenti della bozza restano nella sessione anche cambiando vista. Per sostituirne uno conservato devi prima rimuoverlo dalla bozza; un file non valido blocca salvataggio e analisi finché non viene rimosso o sostituito.
 
 ## Privacy e sicurezza
 
-L'accesso richiede un account. Le policy **Row Level Security (RLS)** limitano le operazioni sui rimborsi al rispettivo proprietario; il bucket dei documenti è privato e consente l'accesso ai file dell'utente autenticato. L'app usa un client Supabase distinto per sessione, valida dati e immagini caricati e non richiede chiavi Supabase privilegiate.
-
-L'analisi automatica è facoltativa: le immagini vengono inviate a Groq solo quando premi il pulsante di analisi, e la connessione viene verificata soltanto in quel momento. Il fallback OCR gira sul server che ospita l'app, senza inviare i documenti a un'altra API. Controlla sempre il risultato prima di salvarlo: l'estrazione automatica può commettere errori o lasciare vuoti i campi incerti.
+L'accesso richiede un account. L'app usa un client Supabase distinto per sessione, valida dati e immagini e non richiede chiavi privilegiate. L'analisi è facoltativa e la connessione viene verificata solo al momento dell'avvio; l'OCR gira sul server dell'app senza inviare i documenti a un'altra API. Controlla sempre il risultato prima di salvarlo.
 
 ## 💻 Esegui l'app in locale
 
-Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supabase configurato. La chiave API Groq è facoltativa. Per usare anche l'OCR in locale, installa Tesseract con le lingue italiana e inglese e rendi disponibile il comando `tesseract` nel PATH; su Streamlit Cloud viene installato automaticamente tramite `packages.txt`.
+Servono **Python 3.14** e un progetto Supabase configurato. Puoi installare le dipendenze con [`uv`](https://docs.astral.sh/uv/) o pip. La chiave Groq è facoltativa. Per l'OCR locale installa Tesseract con italiano e inglese e rendi disponibile `tesseract`; su Streamlit Cloud viene installato tramite `packages.txt`.
 
 1. Clona il repository e installa le dipendenze:
 
@@ -55,7 +30,9 @@ Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supaba
    uv sync --locked
    ```
 
-2. Crea il file `.streamlit/secrets.toml`:
+   Con pip, attiva un ambiente virtuale Python 3.14 ed esegui `python -m pip install -r requirements.txt`.
+
+2. Crea `.streamlit/secrets.toml`:
 
    ```toml
    SUPABASE_URL = "https://IL-TUO-PROGETTO.supabase.co"
@@ -64,19 +41,15 @@ Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supaba
    # GROQ_MODEL = "qwen/qwen3.8-27b"
    ```
 
-   Usa una chiave Supabase **publishable** oppure la vecchia chiave **anon**. Non usare chiavi `service_role` o `sb_secret_...`. `GROQ_MODEL` è facoltativo: il valore predefinito è `qwen/qwen3.8-27b`. Senza `GROQ_API_KEY`, l'analisi automatica usa direttamente l'OCR (se Tesseract è installato) e l'app lo segnala chiaramente. Non pubblicare mai `secrets.toml` o le chiavi nel repository.
+   Usa una chiave Supabase **publishable** o la vecchia **anon**; non usare chiavi `service_role` o `sb_secret_...`. `GROQ_MODEL` è facoltativo (predefinito `qwen/qwen3.8-27b`). Senza `GROQ_API_KEY` l'analisi usa l'OCR locale, se disponibile. Non pubblicare mai `secrets.toml` o le chiavi. Prima di usare documenti reali, attiva la Zero Data Retention nell'account Groq dove disponibile. La chiave Free ha quote e l'app non attiva fatturazione.
 
-   Prima di inviare documenti reali, attiva nel tuo account Groq la conservazione dei dati zero (Zero Data Retention) dove disponibile; questa operazione va fatta direttamente nell'account, non dall'app. La chiave Free è soggetta a quote: l'app non attiva alcuna fatturazione automatica e, al raggiungimento del limite, passa all'OCR locale come descritto sopra.
+3. Configura Supabase nel SQL Editor, nell'ordine:
 
-   Se l'analisi continua a usare l'OCR, controlla il messaggio mostrato dall'app: indica se la configurazione manca, se il servizio è temporaneamente non disponibile, se è stata raggiunta una quota o un limite, o se si è verificato un errore di rete o una risposta non valida. Se l'analisi si interrompe con un errore di configurazione, autorizzazione o modello, verifica le impostazioni indicate in questa sezione. In pagina è riportato solo se l'analisi è configurata: la connessione reale viene verificata soltanto all'avvio dell'analisi.
-
-3. Configura Supabase prima di avviare una nuova installazione. Nel SQL Editor esegui, nell'ordine:
-
-   - `supabase/preflight.sql` per controllare lo stato iniziale;
-   - `supabase/migrations/202609250001_requests_security.sql` per creare o aggiornare struttura e policy;
+   - `supabase/preflight.sql` per lo stato iniziale;
+   - `supabase/migrations/202609250001_requests_security.sql` per struttura e policy;
    - `supabase/verify_security.sql` per verificare RLS, bucket privato e dati preesistenti.
 
-   Se aggiorni un progetto che contiene già rimborsi, conserva prima un backup del database e dei documenti. La migrazione non elimina automaticamente le richieste esistenti.
+   Se aggiorni un progetto con rimborsi esistenti, conserva prima un backup di database e documenti.
 
 4. Avvia l'app:
 
@@ -84,19 +57,15 @@ Servono **Python 3.14**, [`uv`](https://docs.astral.sh/uv/) e un progetto Supaba
    uv run streamlit run app.py
    ```
 
-Per pubblicarla su Streamlit Community Cloud, collega il repository, seleziona **Python 3.14**, configura gli stessi Secrets nella dashboard ed esegui prima la migrazione sul progetto Supabase collegato all'app.
+   Con pip, avvia dallo stesso ambiente virtuale con `python -m streamlit run app.py`.
+
+Per Streamlit Community Cloud collega il repository, seleziona **Python 3.14**, configura gli stessi Secrets ed esegui prima la migrazione.
 
 ## Diagnostico Groq isolato
 
-Questa prova serve solo a verificare manualmente l'estrazione con Groq. Non è integrata nell'app pubblicata e non invia dati reali: usa esclusivamente documenti sintetici generati in memoria. Riutilizza il client e il payload di produzione (`extraction.py`), quindi invia esattamente le stesse richieste dell'app, con le stesse copie JPEG e gli stessi limiti.
+Il diagnostico verifica manualmente l'estrazione con Groq e non è integrato nell'app pubblicata: usa solo documenti sintetici generati in memoria e riutilizza client e payload di produzione (`rimborso_voli/extraction.py`), con le stesse copie JPEG e gli stessi limiti. Serve un account Groq **Free** senza fatturazione. La chiave va inserita solo nel terminale personale, quando richiesta in modo nascosto; non incollarla in chat, variabili d'ambiente, file, Secrets o job CCB. Il comando effettua **una sola richiesta** per caso, senza retry; se ricevi `429`, fermati e rispetta la quota.
 
-Serve un account Groq **Free** senza fatturazione attiva. La chiave API va inserita solo nel terminale personale, quando richiesta in modo nascosto: non incollarla nella chat, in variabili d'ambiente, in file, nei Secrets o in un job CCB. Il diagnostico effettua **una sola richiesta per comando**, senza retry; se riceve `429`, fermati e rispetta la quota. La modalità JSON con immagini è documentata in <https://console.groq.com/docs/vision>.
-
-La richiesta usa l'SDK ufficiale Groq (`groq==1.7.0`, dipendenza di produzione di questo progetto): base URL fisso (`https://api.groq.com`; le variabili `GROQ_BASE_URL` e `GROQ_API_KEY` sono ignorate, la chiave arriva solo dall'input nascosto), timeout 45 s, retry disattivati, redirect rifiutati, nessun header o firma personalizzata. Durante la creazione, la chiamata e la chiusura del client il logging è temporaneamente silenziato e ripristinato alla fine (l'SDK e il suo stack HTTP scrivono record di debug con opzioni di richiesta e dettagli di eccezione, e `GROQ_LOG` può alzarne la verbosità); il logging dell'app e del server non viene modificato. Nell'app, invece del silenciamento globale, i logger delle dipendenze (`groq`, `groq._base_client`, `groq._response`, `httpx`, `httpcore.*`) sono filtrati alla sorgente con un contesto per richiesta: durante una chiamata Groq i loro record — che possono contenere opzioni, URL, intestazioni e dettagli di eccezione — non raggiungono alcun handler, mentre le altre sessioni e i log applicativi continuano normalmente.
-
-Se la variabile `GROQ_CUSTOM_HEADERS` è presente nell'ambiente, anche vuota, il diagnostico si interrompe prima di costruire il client: potrebbe sovrascrivere autenticazione e identità del client. Per eseguire la prova, usa un terminale in cui questa variabile non sia impostata. Il suo contenuto non viene mostrato.
-
-Limiti sui dati ricevuti: l'SDK legge i corpi di risposta e di errore in memoria prima che il diagnostico li esamini, quindi nessun limite al download è garantito dal diagnostico. I limiti si applicano a ciò che viene poi elaborato in locale: al più 16 KiB del corpo di un errore 403 raggiungono la classificazione, al più 1 MiB il parsing della risposta andata a buon fine; corpi più grandi producono la categoria generica.
+Base URL fissa (`https://api.groq.com`; `GROQ_BASE_URL` e `GROQ_API_KEY` sono ignorate), timeout 45 s, retry disattivati, redirect rifiutati, nessun header personalizzato. Se `GROQ_CUSTOM_HEADERS` è presente, anche vuota, il diagnostico si ferma prima di costruire il client. Durante la chiamata il logging delle dipendenze è silenziato e poi ripristinato. I limiti valgono per l'elaborazione locale: al più 16 KiB di un corpo 403 raggiungono la classificazione, al più 1 MiB il parsing della risposta valida.
 
 Esegui i quattro casi uno alla volta:
 
@@ -107,28 +76,19 @@ uv run python -m tests.check_groq --case entrambi
 uv run python -m tests.check_groq --case ambiguo
 ```
 
-L'output riporta solo esito, durata, confronto campo per campo e codice HTTP con categoria fissa. Il codice di uscita è `0` solo quando tutti i campi coincidono; un valore diverso indica una differenza o un errore. Se il terminale non consente l'input nascosto, il comando si ferma prima di leggere la chiave. I test automatici sono offline e non dimostrano il funzionamento live: la prova con Groq resta manuale.
+L'output riporta esito, durata, confronto campo per campo e codice HTTP con categoria fissa. Il codice di uscita è `0` solo quando tutti i campi coincidono, `1` per una differenza e `2` per un errore o input nascosto non disponibile. I test automatici sono offline e non dimostrano il funzionamento live.
 
-### Cosa significa HTTP 403 nel diagnostico
-
-Solo per HTTP 403, il diagnostico classifica una porzione del corpo già ricevuto dall'SDK, limitata a 16 KiB più un byte di controllo; se supera 16 KiB la scarta. Mostra esclusivamente categorie fisse:
-
-- **Permesso modello bloccato (organizzazione/progetto):** `permissions_error` con codice `model_permission_blocked_org` o `model_permission_blocked_project`. Verifica l'accesso al modello con l'amministratore nella console Groq.
-- **Permessi API Groq:** `permissions_error` senza un codice riconosciuto. Verifica i permessi con l'amministratore.
-- **Blocco accesso Cloudflare 1010:** testo completo `error code: 1010` (spazi esterni ammessi) oppure JSON con `error_code` 1010, `error_name` `browser_signature_banned` e `cloudflare_error` true. Contatta l'assistenza Groq.
-- **Configurazione/autorizzazione:** corpo assente, troppo grande, illeggibile o senza una firma riconosciuta; la causa resta da accertare.
-
-Questi sono indicatori diagnostici, non una verifica dell'autenticità del provider. Il corpo e i messaggi ricevuti non vengono mostrati. Il diagnostico non modifica chiave, IP o firma client e non aggira blocchi.
+Per HTTP 403 il diagnostico mostra solo categorie fisse: permesso modello bloccato (organizzazione o progetto), permessi API Groq, blocco Cloudflare 1010, oppure configurazione/autorizzazione quando il corpo è assente, troppo grande o senza firma riconosciuta. Sono indicatori diagnostici, non una verifica del provider; il corpo e i messaggi non vengono mostrati e nessun blocco viene aggirato.
 
 ## Test
 
-I test Python non richiedono l'accesso ai servizi cloud:
+I test Python non richiedono servizi cloud:
 
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
 
-Per verificare anche gli scenari SQL serve Node.js:
+Per gli scenari SQL serve Node.js:
 
 ```bash
 npm --prefix tests/sql ci --ignore-scripts
@@ -139,11 +99,7 @@ node --test tests/sql/security.test.mjs
 
 | File o cartella | Contenuto |
 | --- | --- |
-| `app.py` | Interfaccia, caricamento, revisione e storico |
-| `domain.py` | Validazione dei dati e preparazione delle immagini |
-| `extraction.py` | Estrazione dei dati con Groq |
-| `ocr_fallback.py` e `packages.txt` | OCR locale e dipendenze di sistema |
-| `security.py` | Configurazione e sessioni utente |
-| `repository.py` | Salvataggio di rimborsi e documenti |
+| `app.py` | Entrypoint sottile per Streamlit e Codespaces |
+| `rimborso_voli/` | Interfaccia, validazione, estrazione Groq, OCR, sessioni e repository |
 | `supabase/` | Migrazione e verifiche del database |
-| `tests/` | Test dell'app e delle policy SQL |
+| `tests/` | Test dell'app, del diagnostico e delle policy SQL |

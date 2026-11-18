@@ -25,18 +25,18 @@ from PIL import Image, ImageDraw, ImageFont
 
 from types import SimpleNamespace
 
-from domain import FIELDS, ValidationError, normalize_fields, parse_extraction
-from extraction import (
+from rimborso_voli.domain import FIELDS, ValidationError, normalize_fields
+from rimborso_voli.extraction import (
     DEFAULT_MODEL,
     GROQ_BASE_URL,
-    MAX_COMPLETION_TOKENS,
     MAX_RESPONSE_BYTES,
-    PROMPT,
     TIMEOUT_SECONDS,
     ConfigurationError,
     InputNotSendable,
     build_client,
     build_payload as _production_build_payload,
+    parse_completion,
+    request_response,
 )
 
 
@@ -167,10 +167,7 @@ def _load_font(size):
     try:
         return ImageFont.truetype("DejaVuSans.ttf", size)
     except (OSError, ValueError):
-        try:
-            return ImageFont.load_default(size=size)
-        except TypeError:
-            return ImageFont.load_default()
+        return ImageFont.load_default(size=size)
 
 
 def _document(lines):
@@ -247,13 +244,6 @@ def _category_for_status(status):
     if status == 408 or 500 <= status <= 599:
         return CATEGORY_TEMPORARY
     return CATEGORY_INVALID
-
-
-def _close_quietly(response):
-    try:
-        response.close()
-    except Exception:
-        pass
 
 
 def _error_body(exc):
@@ -356,71 +346,42 @@ def send_request(payload, key, client_factory=None):
     """Send exactly one request via the official SDK; never retry and never
     expose provider text."""
     factory = _default_client_factory(key) if client_factory is None else client_factory
-    client = None
-    try:
-        with _silent_logging():
-            try:
-                client = factory()
-                api_response = client.chat.completions.with_raw_response.create(**payload)
-            except groq.APIStatusError as exc:
-                # The SDK raised on a 4xx/5xx response and already read its
-                # body; only the 403 classification looks at it, capped.
-                status = exc.status_code
-                if status == 403:
-                    category = _classify_403_body(_error_body(exc))
-                else:
-                    category = _category_for_status(status)
-                raise DiagnosticError(category, status) from None
-            except groq.APITimeoutError:
-                raise DiagnosticError(CATEGORY_TIMEOUT) from None
-            except groq.APIConnectionError:
-                raise DiagnosticError(CATEGORY_NETWORK) from None
-    finally:
-        if client is not None:
-            with _silent_logging():
-                _close_quietly(client)
-
-    status = api_response.status_code
-    if status != 200:
-        # Defensive: the SDK raises APIStatusError for 4xx/5xx, so this path
-        # is unexpected; no body is read here.
-        raise DiagnosticError(_category_for_status(status), status)
-    try:
-        content = api_response.read()
-    except Exception:
-        # The SDK already received the body eagerly; a failure converting
-        # it must not surface provider text.
-        raise DiagnosticError(CATEGORY_INVALID, status) from None
+    status = None
+    with _silent_logging():
+        try:
+            with request_response(factory, payload) as response:
+                status = response.status_code
+                if status != 200:
+                    # Defensive: the SDK raises APIStatusError for 4xx/5xx.
+                    raise DiagnosticError(_category_for_status(status), status)
+                try:
+                    content = response.read()
+                except Exception:
+                    # The SDK already received the body eagerly; a failure
+                    # converting it must not surface provider text.
+                    raise DiagnosticError(CATEGORY_INVALID, status) from None
+        except groq.APIStatusError as exc:
+            # The SDK raised on a 4xx/5xx response and already read its
+            # body; only the 403 classification looks at it, capped.
+            error_status = exc.status_code
+            if error_status == 403:
+                category = _classify_403_body(_error_body(exc))
+            else:
+                category = _category_for_status(error_status)
+            raise DiagnosticError(category, error_status) from None
+        except groq.APITimeoutError:
+            raise DiagnosticError(CATEGORY_TIMEOUT) from None
+        except groq.APIConnectionError:
+            raise DiagnosticError(CATEGORY_NETWORK) from None
     if not isinstance(content, bytes) or len(content) > MAX_RESPONSE_BYTES:
         raise DiagnosticError(CATEGORY_INVALID, status)
     return status, content
 
 
 def parse_response(raw):
-    if not isinstance(raw, bytes) or not raw:
-        raise DiagnosticError(CATEGORY_INVALID)
+    """Reuse the application's strict parser, mapping failures to the CLI category."""
     try:
-        document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, TypeError):
-        raise DiagnosticError(CATEGORY_INVALID) from None
-    if not isinstance(document, dict):
-        raise DiagnosticError(CATEGORY_INVALID)
-    choices = document.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise DiagnosticError(CATEGORY_INVALID)
-    choice = choices[0]
-    if not isinstance(choice, dict):
-        raise DiagnosticError(CATEGORY_INVALID)
-    if choice.get("finish_reason") == "length":
-        raise DiagnosticError(CATEGORY_INVALID)
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        raise DiagnosticError(CATEGORY_INVALID)
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise DiagnosticError(CATEGORY_INVALID)
-    try:
-        return parse_extraction(content)
+        return parse_completion(raw)
     except ValidationError:
         raise DiagnosticError(CATEGORY_INVALID) from None
 

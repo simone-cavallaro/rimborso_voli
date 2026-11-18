@@ -2,8 +2,8 @@
 
 from uuid import UUID, uuid4
 
-from domain import MAX_PDF_BYTES, ValidationError, normalize_fields
-from security import log_failure
+from .domain import MAX_PDF_BYTES, ValidationError, normalize_fields
+from .security import log_failure
 
 BUCKET = "pdf_rimborsi"
 DOCUMENT_FIELDS = ("pdf_ricevuta", "pdf_imbarco")
@@ -27,6 +27,9 @@ class RequestsRepository:
 
     def owned(self):
         return self.client.table("richieste").select(COLUMNS).eq("user_id", self.user_id)
+
+    def owned_row(self, query, record):
+        return query.eq("user_id", self.user_id).eq("id", record["id"]).eq("version", record["version"])
 
     def get(self, record_id):
         rows = self.owned().eq("id", record_id).limit(1).execute().data
@@ -129,9 +132,7 @@ class RequestsRepository:
             paths = self.upload(documents, str(current["client_request_id"]), attempted)
             payload = {**values, **paths}
             write_started = True
-            rows = (self.client.table("richieste").update(payload)
-                    .eq("user_id", self.user_id).eq("id", record["id"])
-                    .eq("version", record["version"]).execute().data)
+            rows = self.owned_row(self.client.table("richieste").update(payload), record).execute().data
             if not rows:
                 raise ConflictError("La richiesta è cambiata durante il salvataggio. Riaprila dallo storico.")
             saved = rows[0]
@@ -157,8 +158,7 @@ class RequestsRepository:
     def delete(self, record):
         # Delete the row first: a DB failure must never destroy its documents.
         try:
-            rows = (self.client.table("richieste").delete().eq("user_id", self.user_id)
-                    .eq("id", record["id"]).eq("version", record["version"]).execute().data)
+            rows = self.owned_row(self.client.table("richieste").delete(), record).execute().data
         except Exception as exc:
             try:
                 remaining = self.owned().eq("id", record["id"]).limit(1).execute().data

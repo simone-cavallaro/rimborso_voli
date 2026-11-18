@@ -97,9 +97,7 @@ packaging==26.3
     #   pikepdf
     #   streamlit
 pandas==3.0.5
-    # via
-    #   rimborso-voli
-    #   streamlit
+    # via streamlit
 pikepdf==10.13.0.post1
     # via img2pdf
 pillow==12.3.0

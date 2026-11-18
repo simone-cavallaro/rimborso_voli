@@ -3,10 +3,6 @@
 
 Prima di scrivere o modificare codice, carica e applica `karpathy-guidelines`. Esplicita le assunzioni rilevanti, scegli la modifica minima completa, limita il diff al compito e verifica il risultato con controlli proporzionati. Mantieni Ponytail e Ponytail-review. Includi questa direttiva nel brief dei subagenti che scrivono codice. Per ricerca e revisione in sola lettura la skill resta disponibile su richiesta.
 
-## Ruolo QA
-
-Freebuff QA sostituisce OpenRouter QA negli incarichi futuri. Riceve esclusivamente scenari sintetici o materiale pubblico, senza codice inedito, credenziali, documenti reali o strumenti; non sostituisce Security. Il vecchio ruolo OpenRouter QA è ritirato. Avviare Freebuff soltanto dopo integrazione CCB verificata, isolamento e test di comunicazione; non mascherarlo come provider diverso e non avviare client esterni al coordinamento CCB.
-
 ## Messaggi dei commit
 
 I messaggi dei commit destinati a GitHub devono essere in italiano, sia nel titolo sia nel corpo, inclusi eventuali commit di merge o squash. Nomi tecnici, identificatori e percorsi conservano la forma originale. Questa regola non autorizza commit, push, merge o deploy: restano necessarie le autorizzazioni distinte previste dal progetto.

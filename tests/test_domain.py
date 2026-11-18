@@ -4,7 +4,7 @@ import unittest
 
 from PIL import Image
 
-from domain import (
+from rimborso_voli.domain import (
     MAX_UPLOAD_BYTES, ValidationError, normalize_fields, parse_amount,
     parse_extraction, prepare_document,
 )
