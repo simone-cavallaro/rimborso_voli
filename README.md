@@ -10,7 +10,9 @@ L'app è disponibile su [**rimborso-voli-sicilia.streamlit.app**](https://rimbor
 
 Ogni utente può consultare solo i propri rimborsi e documenti. I dati sono archiviati su Supabase, con controlli di accesso applicati sia al database sia ai file.
 
-L'interfaccia è ottimizzata anche per lo smartphone: caricamenti uno sotto l'altro, anteprime a larghezza piena, pulsanti estesi e navigazione «Nuova richiesta» / «Storico rimborsi» direttamente nel corpo della pagina, insieme al pulsante «Esci». Nessun menu nascosto da aprire su telefono.
+L'interfaccia «Mare e limoni» usa blu mediterraneo, fondo avorio e accenti limone, con widget nativi Streamlit. Il percorso «Nuova richiesta» è diviso in **Documenti** e **Dati del volo**, con caricamenti uno sotto l'altro e analisi facoltativa. La navigazione «Nuova richiesta» / «Storico richieste» e il pulsante «Esci» sono nel corpo della pagina. Lo storico mostra itinerario, data e stato dei documenti; se è vuoto, offre un pulsante per iniziare. Per svuotare una bozza o annullare le modifiche serve una conferma esplicita.
+
+I documenti della bozza restano nella sola sessione anche cambiando vista, con un'indicazione per ciascuno. Per sostituire un documento conservato devi prima premere «Rimuovi … dalla bozza»: il selettore ricompare senza la vecchia copia. In modifica questo non cancella i documenti già salvati. Per conservare i nuovi documenti nello storico devi salvare la richiesta. Reset, annullamento, salvataggio e uscita puliscono i documenti della relativa bozza. Un file non valido ricevuto dal server blocca salvataggio e analisi finché non viene rimosso o sostituito; un file rifiutato dal browser, per esempio perché oltre 10 MB, non arriva al server e non sostituisce alcun documento. Le azioni possono restare disponibili per gli altri documenti e dati presenti.
 
 ## Il problema
 
