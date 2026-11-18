@@ -11,9 +11,9 @@ from PIL import Image
 from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit.testing.v1 import AppTest
 
-import extraction
-from domain import ValidationError
-from repository import RequestsRepository
+from rimborso_voli import extraction
+from rimborso_voli.domain import ValidationError
+from rimborso_voli.repository import RequestsRepository
 from tests.fakes import FakeClient, USER_A, USER_B
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +43,7 @@ class AppTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()
         self.uploads = {}
-        self.client_patch = patch("security.create_client", return_value=self.client)
+        self.client_patch = patch("rimborso_voli.security.create_client", return_value=self.client)
         self.upload_patch = patch("streamlit.file_uploader", side_effect=lambda *args, **kwargs: self.uploads.get(kwargs["key"]))
         self.client_patch.start()
         self.upload_mock = self.upload_patch.start()
@@ -100,12 +100,12 @@ class AppTests(unittest.TestCase):
     def test_both_draft_documents_and_ai_values_survive_empty_selectors(self):
         self.uploads.update(new_receipt=image_upload(), new_boarding=image_upload("blue"))
         self.app.run()
-        with patch("extraction.extract", return_value={"numero_volo": "AI123"}):
+        with patch("rimborso_voli.extraction.extract", return_value={"numero_volo": "AI123"}):
             self.click("Leggi i nuovi documenti con AI")
         self.app.text_input(key="new_field_data_volo").set_value("17/11/").run()
         digests = {field: self.app.session_state[f"new_prepared_{field}"].digest
                    for field in ("pdf_ricevuta", "pdf_imbarco")}
-        with patch("extraction.extract") as ai, patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract") as ai, patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.goto_history()
             # Model a selector lost on navigation, without an on_change event.
             self.uploads.clear()
@@ -166,7 +166,7 @@ class AppTests(unittest.TestCase):
         self.assert_clean()
         self.assertNotIn("new_prepared_pdf_ricevuta", self.app.session_state)
         self.assertNotIn("new_upload_error_pdf_ricevuta", self.app.session_state)
-        with patch("extraction.extract", return_value={}) as ai:
+        with patch("rimborso_voli.extraction.extract", return_value={}) as ai:
             self.click("Leggi i nuovi documenti con AI")
         self.assertEqual(set(ai.call_args.args[0]), {"pdf_imbarco"})
         self.click("Salva richiesta")
@@ -363,7 +363,7 @@ class AppTests(unittest.TestCase):
         other_app.secrets.update(SUPABASE_URL="https://example.supabase.co", SUPABASE_KEY="sb_publishable_test", GROQ_API_KEY="test")
         other_app.session_state["user_id"] = USER_B
         self.uploads.clear()
-        with patch("security.create_client", return_value=other_client):
+        with patch("rimborso_voli.security.create_client", return_value=other_client):
             other_app.run()
         self.assertEqual(list(other_app.exception), [])
         self.assertEqual(list(other_app.error), [])
@@ -405,7 +405,7 @@ class AppTests(unittest.TestCase):
 
     def test_upload_change_keeps_corrected_ai_fields_and_clears_stale_suggestions(self):
         self.add_receipt()
-        with patch("extraction.extract", return_value={"numero_volo": "AI123", "compagnia_aerea": "Demo Air"}):
+        with patch("rimborso_voli.extraction.extract", return_value={"numero_volo": "AI123", "compagnia_aerea": "Demo Air"}):
             self.click("Leggi i nuovi documenti con AI")
         self.app.text_input(key="new_field_numero_volo").set_value("CORRETTO456").run()
         self.app.button(key="new_remove_pdf_ricevuta").click().run()
@@ -546,8 +546,8 @@ class AppTests(unittest.TestCase):
 
     def test_file_change_clears_previous_extraction(self):
         self.add_receipt()
-        with patch("extraction.extract", return_value={"numero_volo": "OLD123"}), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", return_value={"numero_volo": "OLD123"}), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assert_clean()
@@ -560,8 +560,8 @@ class AppTests(unittest.TestCase):
 
     def test_groq_success_does_not_call_ocr_or_save(self):
         self.add_receipt()
-        with patch("extraction.extract", return_value={"numero_volo": "GRO777"}), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", return_value={"numero_volo": "GRO777"}), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assert_clean()
@@ -572,8 +572,8 @@ class AppTests(unittest.TestCase):
     def test_failed_ai_still_allows_manual_saving(self):
         self.add_receipt_with_manual_value()
         error = groq_status_error(503, "secret-provider-details")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local", return_value={}):
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={}):
             self.click("Leggi i nuovi documenti con AI")
         self.assertEqual(list(self.app.exception), [])
         self.assertTrue(any("temporaneamente non disponibile" in warning.value for warning in self.app.warning))
@@ -586,8 +586,8 @@ class AppTests(unittest.TestCase):
     def test_missing_groq_key_explains_ocr_fallback_without_api_call(self):
         self.add_receipt()
         self.app.secrets["GROQ_API_KEY"] = ""
-        with patch("extraction.extract") as api, \
-                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR123"}):
+        with patch("rimborso_voli.extraction.extract") as api, \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={"numero_volo": "OCR123"}):
             self.click("Leggi i nuovi documenti con AI")
         api.assert_not_called()
         self.assert_clean()
@@ -598,8 +598,8 @@ class AppTests(unittest.TestCase):
     def test_quota_error_is_a_distinct_category(self):
         self.add_receipt()
         error = groq_status_error(429, "quota-exhausted-secret-marker")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRQ1"}):
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={"numero_volo": "OCRQ1"}):
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCRQ1")
@@ -610,8 +610,8 @@ class AppTests(unittest.TestCase):
     def test_503_with_failed_ocr_keeps_both_diagnoses(self):
         self.add_receipt_with_manual_value()
         error = groq_status_error(503, "provider-raw-details")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
             self.click("Leggi i nuovi documenti con AI")
         self.assertEqual(list(self.app.exception), [])
         rendered = " ".join(item.value for item in self.app.error)
@@ -621,8 +621,8 @@ class AppTests(unittest.TestCase):
 
     def test_network_error_with_failed_ocr_keeps_reason(self):
         self.add_receipt_with_manual_value()
-        with patch("extraction.extract", side_effect=groq_connection_error()), \
-                patch("ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
+        with patch("rimborso_voli.extraction.extract", side_effect=groq_connection_error()), \
+                patch("rimborso_voli.ocr_fallback.extract_local", side_effect=RuntimeError("ocr broken")):
             self.click("Leggi i nuovi documenti con AI")
         self.assertEqual(list(self.app.exception), [])
         rendered = " ".join(item.value for item in self.app.error)
@@ -631,11 +631,10 @@ class AppTests(unittest.TestCase):
         self.assert_manual_fields_preserved()
 
     def test_non_string_groq_model_falls_back_to_default(self):
-        import extraction
         self.add_receipt()
         self.app.secrets["GROQ_MODEL"] = 12345
         captured = {}
-        with patch("extraction.extract") as api:
+        with patch("rimborso_voli.extraction.extract") as api:
             def capture(documents, api_key, model_name=None):
                 captured["model"] = model_name
                 return {"numero_volo": "OK"}
@@ -657,8 +656,8 @@ class AppTests(unittest.TestCase):
             return self.values.get(key)
 
     def _settings_with(self, secrets):
-        import app as app_module
-        with patch("app.st", SimpleNamespace(secrets=secrets)):
+        from rimborso_voli import app as app_module
+        with patch("rimborso_voli.app.st", SimpleNamespace(secrets=secrets)):
             return app_module.groq_settings()
 
     def test_no_secrets_found_and_plain_file_error_mean_absence(self):
@@ -723,8 +722,8 @@ class AppTests(unittest.TestCase):
                     return default
 
         with patch("streamlit.testing.v1.app_test.Secrets", FakeSecretsStore), \
-                patch("ocr_fallback.extract_local") as ocr, \
-                patch("extraction.extract", side_effect=RuntimeError("no api call expected")):
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr, \
+                patch("rimborso_voli.extraction.extract", side_effect=RuntimeError("no api call expected")):
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
@@ -767,8 +766,8 @@ class AppTests(unittest.TestCase):
     def test_permanent_auth_error_is_not_masked_as_ocr_success(self):
         self.add_receipt_with_manual_value()
         error = groq_status_error(401, "raw-provider-body-marker")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
@@ -781,8 +780,8 @@ class AppTests(unittest.TestCase):
     def test_permanent_model_error_is_not_masked(self):
         self.add_receipt_with_manual_value()
         error = groq_status_error(404, "model-not-found-marker")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
@@ -797,8 +796,8 @@ class AppTests(unittest.TestCase):
             with self.subTest(status=status):
                 error = groq_status_error(status, f"bad request marker {status}")
                 self.app.session_state["last_analysis"] = -1000.0
-                with patch("extraction.extract", side_effect=error), \
-                        patch("ocr_fallback.extract_local") as ocr:
+                with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                        patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
                     self.click("Leggi i nuovi documenti con AI")
                 ocr.assert_not_called()
                 self.assertEqual(list(self.app.exception), [])
@@ -809,8 +808,8 @@ class AppTests(unittest.TestCase):
 
     def test_oversized_input_blocks_analysis_without_ocr_or_call(self):
         self.add_receipt_with_manual_value()
-        with patch("extraction.extract", side_effect=extraction.InputNotSendable()), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", side_effect=extraction.InputNotSendable()), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
@@ -822,8 +821,8 @@ class AppTests(unittest.TestCase):
 
     def test_local_configuration_error_blocks_analysis_without_ocr(self):
         self.add_receipt_with_manual_value()
-        with patch("extraction.extract", side_effect=extraction.ConfigurationError()), \
-                patch("ocr_fallback.extract_local") as ocr:
+        with patch("rimborso_voli.extraction.extract", side_effect=extraction.ConfigurationError()), \
+                patch("rimborso_voli.ocr_fallback.extract_local") as ocr:
             self.click("Leggi i nuovi documenti con AI")
         ocr.assert_not_called()
         self.assertEqual(list(self.app.exception), [])
@@ -833,8 +832,8 @@ class AppTests(unittest.TestCase):
 
     def test_network_error_falls_back_to_ocr(self):
         self.add_receipt()
-        with patch("extraction.extract", side_effect=groq_connection_error()), \
-                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR456"}):
+        with patch("rimborso_voli.extraction.extract", side_effect=groq_connection_error()), \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={"numero_volo": "OCR456"}):
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCR456")
@@ -844,8 +843,8 @@ class AppTests(unittest.TestCase):
     def test_invalid_groq_response_falls_back_to_ocr(self):
         self.add_receipt()
         error = ValidationError("risposta non valida")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCR000"}):
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={"numero_volo": "OCR000"}):
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()
         self.assertEqual(self.app.text_input(key="new_field_numero_volo").value, "OCR000")
@@ -854,8 +853,8 @@ class AppTests(unittest.TestCase):
     def test_provider_details_never_reach_ui_or_log(self):
         self.add_receipt()
         error = groq_status_error(500, "raw-500-provider-secret-marker")
-        with patch("extraction.extract", side_effect=error), \
-                patch("ocr_fallback.extract_local", return_value={"numero_volo": "OCRX1"}), \
+        with patch("rimborso_voli.extraction.extract", side_effect=error), \
+                patch("rimborso_voli.ocr_fallback.extract_local", return_value={"numero_volo": "OCRX1"}), \
                 self.assertLogs("rimborso_voli", level="WARNING") as logs:
             self.click("Leggi i nuovi documenti con AI")
         self.assert_clean()

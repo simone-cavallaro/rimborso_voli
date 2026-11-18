@@ -6,7 +6,7 @@ import re
 import subprocess
 import unicodedata
 
-from domain import normalize_fields
+from .domain import normalize_fields
 
 
 class OcrUnavailable(RuntimeError):
@@ -32,7 +32,7 @@ AIRPORTS = {
     "OLB": ("OLB", "OLBIA"),
 }
 AIRLINES = {"FR": "Ryanair", "AZ": "ITA Airways", "U2": "easyJet", "W6": "Wizz Air", "VY": "Vueling"}
-FLIGHT = re.compile(r"\b(FR|AZ|U2|W6|VY)\s*[- ]?\s*(\d{2,4})\b", re.I)
+FLIGHT = re.compile(r"\b(" + "|".join(map(re.escape, AIRLINES)) + r")\s*[- ]?\s*(\d{2,4})\b", re.I)
 AMOUNT = re.compile(r"(?:\bEUR\s*|€\s*)(\d{1,4}[.,]\d{2})\b|\b(\d{1,4}[.,]\d{2})\s*(?:EUR\b|€)", re.I)
 NUMERIC_DATE = re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b")
 MONTHS = {
@@ -131,9 +131,9 @@ def _extract_texts(texts):
     # a single explicitly priced, single-passenger fare item for a single flight.
     fare_prices = []
     receipt_lines = lines_by_doc.get("pdf_ricevuta", [])
-    fare_rows = [index for index, line in enumerate(receipt_lines) if FARE_ITEM.search(line)]
-    all_fare_rows = [line for line in receipt_lines if ANY_FARE_ITEM.search(line)]
-    if flight and len(fare_rows) == len(all_fare_rows) == 1:
+    fare_rows = [index for index, line in enumerate(receipt_lines) if ANY_FARE_ITEM.search(line)]
+    # Exactly one fare item, for a single passenger: otherwise the amount is ambiguous.
+    if flight and len(fare_rows) == 1 and FARE_ITEM.search(receipt_lines[fare_rows[0]]):
         index = fare_rows[0]
         for line in receipt_lines[index:index + 3]:
             amounts = [first or second for first, second in AMOUNT.findall(line)]

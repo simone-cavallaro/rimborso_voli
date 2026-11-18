@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from domain import ValidationError
-from repository import ConflictError, RequestsRepository, UncertainWriteError
+from rimborso_voli.domain import ValidationError
+from rimborso_voli.repository import ConflictError, RequestsRepository, UncertainWriteError
 from tests.fakes import FakeClient, USER_A, USER_B
 
 DOC = SimpleNamespace(pdf=b"%PDF-1.4\nsynthetic test document")

@@ -14,10 +14,10 @@ import groq
 import httpx
 from PIL import Image
 
-import extraction
-from domain import ValidationError
-from security import log_failure
-from extraction import (
+from rimborso_voli import extraction
+from rimborso_voli.domain import ValidationError
+from rimborso_voli.security import log_failure
+from rimborso_voli.extraction import (
     DEFAULT_MODEL,
     PROMPT,
     ConfigurationError,
@@ -77,7 +77,7 @@ def run_extract(handler, documents=None, **kwargs):
         seen.update(kwargs2)
         return httpx.Client(transport=httpx.MockTransport(tracking(handler, calls)), **kwargs2)
 
-    with patch("extraction.groq.DefaultHttpxClient", side_effect=http_client):
+    with patch("rimborso_voli.extraction.groq.DefaultHttpxClient", side_effect=http_client):
         values = extraction.extract(documents, KEY, **kwargs)
     return values, calls, seen
 
@@ -190,9 +190,9 @@ class TransportTests(unittest.TestCase):
             calls.append("client")
             return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
 
-        with patch("extraction.MAX_PAYLOAD_BYTES", 1000), \
-                patch("extraction.groq.Groq", wraps=groq.Groq) as groq_constructor, \
-                patch("extraction.groq.DefaultHttpxClient", side_effect=http_client):
+        with patch("rimborso_voli.extraction.MAX_PAYLOAD_BYTES", 1000), \
+                patch("rimborso_voli.extraction.groq.Groq", wraps=groq.Groq) as groq_constructor, \
+                patch("rimborso_voli.extraction.groq.DefaultHttpxClient", side_effect=http_client):
             with self.assertRaises(InputNotSendable):
                 extraction.extract({"pdf_ricevuta": document((64, 64))}, KEY)
         self.assertEqual(calls, [])
@@ -223,8 +223,8 @@ class FactoryTests(unittest.TestCase):
         for value in ("", "Authorization: gsk_other_marker\nHost: other.invalid"):
             with self.subTest(empty=not value):
                 with patch.dict("os.environ", {"GROQ_CUSTOM_HEADERS": value}), \
-                        patch("extraction.groq.Groq") as constructor, \
-                        patch("extraction.groq.DefaultHttpxClient") as http_client:
+                        patch("rimborso_voli.extraction.groq.Groq") as constructor, \
+                        patch("rimborso_voli.extraction.groq.DefaultHttpxClient") as http_client:
                     with self.assertRaises(ConfigurationError):
                         build_client(KEY)
                 constructor.assert_not_called()
@@ -312,7 +312,7 @@ class SdkErrorTests(unittest.TestCase):
         ):
             with self.subTest():
                 closed.clear()
-                with patch("extraction.groq.DefaultHttpxClient",
+                with patch("rimborso_voli.extraction.groq.DefaultHttpxClient",
                            side_effect=lambda **kw: TrackingClient(
                                transport=httpx.MockTransport(handler), **kw)):
                     try:
@@ -477,7 +477,7 @@ class PrivacyFilterTests(unittest.TestCase):
                 errors.append(exc)
 
         barrier = threading.Barrier(2)
-        with patch("extraction.groq.DefaultHttpxClient", side_effect=http_client):
+        with patch("rimborso_voli.extraction.groq.DefaultHttpxClient", side_effect=http_client):
             thread_a = threading.Thread(target=run_session, args=(KEY, logging.WARNING,
                                                                  "benign application record session A"))
             thread_b = threading.Thread(target=run_session, args=("test-key-b", logging.INFO,
@@ -511,7 +511,7 @@ class PrivacyFilterTests(unittest.TestCase):
         target.addHandler(_Capture(sink))
         marker = "app-log-marker-99"
         try:
-            with patch("extraction.groq.DefaultHttpxClient",
+            with patch("rimborso_voli.extraction.groq.DefaultHttpxClient",
                        side_effect=lambda **kw: httpx.Client(
                            transport=httpx.MockTransport(
                                lambda request: httpx.Response(503, json={"error": {"message": marker}})),

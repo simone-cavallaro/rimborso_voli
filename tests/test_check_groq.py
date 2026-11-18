@@ -14,9 +14,9 @@ import groq
 import httpx
 from PIL import Image
 
-from domain import FIELDS
-import extraction
-from extraction import PROMPT
+from rimborso_voli.domain import FIELDS, ValidationError
+from rimborso_voli import extraction
+from rimborso_voli.extraction import PROMPT
 from tests import check_groq
 
 
@@ -214,8 +214,8 @@ class DefaultClientTests(unittest.TestCase):
             with self.subTest(empty=not value):
                 factory = check_groq._default_client_factory(KEY)
                 with patch.dict("os.environ", {"GROQ_CUSTOM_HEADERS": value}), \
-                     patch("extraction.groq.Groq") as constructor, \
-                     patch("extraction.groq.DefaultHttpxClient") as http_client:
+                     patch("rimborso_voli.extraction.groq.Groq") as constructor, \
+                     patch("rimborso_voli.extraction.groq.DefaultHttpxClient") as http_client:
                     with self.assertRaises(check_groq.DiagnosticError) as caught:
                         factory()
                 self.assertEqual(caught.exception.category, check_groq.CATEGORY_CONFIG)
@@ -234,8 +234,8 @@ class DefaultClientTests(unittest.TestCase):
 
         custom = f"Authorization: {OTHER_TOKEN}\nUser-Agent: test-client\nHost: other.invalid"
         with patch.dict("os.environ", {"GROQ_CUSTOM_HEADERS": custom}), \
-             patch("extraction.groq.Groq", wraps=groq.Groq) as constructor, \
-             patch("extraction.groq.DefaultHttpxClient", side_effect=http_client) as transport:
+             patch("rimborso_voli.extraction.groq.Groq", wraps=groq.Groq) as constructor, \
+             patch("rimborso_voli.extraction.groq.DefaultHttpxClient", side_effect=http_client) as transport:
             code, out, err = run_main("ricevuta")
         self.assertEqual(code, 2)
         self.assertIn("configurazione/autorizzazione", out)
@@ -469,6 +469,20 @@ class ResponseParsingTests(unittest.TestCase):
             with self.assertRaises(check_groq.DiagnosticError) as caught:
                 check_groq.parse_response(raw)
             self.assertEqual(caught.exception.category, check_groq.CATEGORY_INVALID)
+
+    def test_non_standard_json_constants_are_rejected_like_the_app_parser(self):
+        bodies = [
+            b'{"choices": [{"message": {"content": "{}"}}], "usage": NaN}',
+            b'{"choices": [{"message": {"content": "{}"}}], "usage": Infinity}',
+            b'{"choices": [{"message": {"content": "{}"}}], "usage": -Infinity}',
+        ]
+        for raw in bodies:
+            with self.subTest(raw=raw[:60]):
+                with self.assertRaises(check_groq.DiagnosticError) as caught:
+                    check_groq.parse_response(raw)
+                self.assertEqual(caught.exception.category, check_groq.CATEGORY_INVALID)
+                with self.assertRaises(ValidationError):
+                    extraction.parse_completion(raw)
 
 
 class Forbidden403ClassificationTests(unittest.TestCase):

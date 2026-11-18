@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from security import clear_session, session_client, validate_public_key
+from rimborso_voli.security import clear_session, session_client, validate_public_key
 
 
 def jwt_key(role):
@@ -21,7 +21,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_distinct_clients_and_auth_storage_per_session(self):
         first, second = {}, {}
-        with patch("security.create_client", side_effect=lambda *args, **kwargs: object()) as factory:
+        with patch("rimborso_voli.security.create_client", side_effect=lambda *args, **kwargs: object()) as factory:
             a = session_client(first, "https://example.supabase.co", jwt_key("anon"))
             b = session_client(second, "https://example.supabase.co", jwt_key("anon"))
             self.assertIsNot(a, b)
