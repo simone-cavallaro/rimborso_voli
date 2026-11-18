@@ -9,3 +9,25 @@ showErrorDetails = "none"
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#075EAA"
+backgroundColor = "#FFFCF3"
+secondaryBackgroundColor = "#F0F4F8"
+textColor = "#0B1726"
+linkColor = "#075EAA"
+borderColor = "#78889B"
+showWidgetBorder = true
+font = "sans-serif"
+baseFontSize = 16
+headingFontSizes = ["2rem", "1.5rem", "1.25rem", "1.125rem", "1rem", "1rem"]
+baseRadius = "0.5rem"
+buttonRadius = "0.5rem"
+yellowColor = "#EDCC3C"
+yellowBackgroundColor = "#FFF2B3"
+yellowTextColor = "#635000"
+blueColor = "#075EAA"
+blueBackgroundColor = "#E7F1FA"
+blueTextColor = "#07518F"
+redTextColor = "#9B1C24"

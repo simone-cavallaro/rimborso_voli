@@ -1,5 +1,4 @@
 import time
-from hashlib import sha256
 from uuid import uuid4
 
 import groq
@@ -155,12 +154,14 @@ def authenticate(client):
             flash("La sessione è terminata. Accedi nuovamente.")
             st.rerun()
 
+    st.write("Conserva le ricevute dei voli e aggiungi la carta d'imbarco quando sarà disponibile.")
+    st.caption("La domanda di rimborso si presenta sul portale Caro Voli Sicilia: l'app non la invia e non ne calcola l'importo.")
     login, registration = st.tabs(["Accedi", "Registrati"])
     with login:
         with st.form("login"):
             email = st.text_input("Email", max_chars=254)
             password = st.text_input("Password", type="password", max_chars=128)
-            submitted = st.form_submit_button("Accedi")
+            submitted = st.form_submit_button("Accedi", type="primary", width="stretch")
         if submitted:
             try:
                 response = client.auth.sign_in_with_password({"email": email.strip(), "password": password})
@@ -179,7 +180,7 @@ def authenticate(client):
             email = st.text_input("Email", key="registration_email", max_chars=254)
             password = st.text_input("Password", key="registration_password", type="password", max_chars=128,
                                      help="Usa almeno 12 caratteri e una password diversa da altri servizi.")
-            submitted = st.form_submit_button("Crea account")
+            submitted = st.form_submit_button("Crea account", type="primary", width="stretch")
         if submitted:
             if len(password) < 12:
                 st.error("La password deve contenere almeno 12 caratteri.")
@@ -198,34 +199,71 @@ def authenticate(client):
     st.stop()
 
 
+def mark_upload_changed(prefix, field):
+    # Only an uploader event means explicit selection/removal, not view cleanup.
+    st.session_state[f"{prefix}_upload_changed_{field}"] = True
+
+
+def remove_draft_document(prefix, field, slot):
+    for kind in ("prepared", "upload_error", "upload_changed"):
+        st.session_state.pop(f"{prefix}_{kind}_{field}", None)
+    generation = f"{prefix}_{slot}_generation"
+    # A new widget identity clears the selector without assigning its value.
+    st.session_state[generation] = st.session_state.get(generation, 0) + 1
+
+
 def uploads(prefix, editing=False):
-    # One uploader per row: on a phone the two columns were cramped and hard to tap.
-    receipt = st.file_uploader("Sostituisci ricevuta (facoltativo)" if editing else "Ricevuta di pagamento",
-                               type=["jpg", "jpeg", "png"], key=f"{prefix}_receipt", max_upload_size=10)
-    boarding = st.file_uploader("Aggiungi o sostituisci carta d'imbarco (facoltativo)",
-                                type=["jpg", "jpeg", "png"], key=f"{prefix}_boarding", max_upload_size=10)
+    st.subheader("Documenti")
+    st.caption("Immagini JPG, JPEG o PNG · massimo 10 MB per file. La carta d'imbarco è facoltativa.")
+    st.caption("I documenti della bozza restano solo in questa sessione, anche cambiando vista. Salva la richiesta per conservarli nello storico.")
+    if editing:
+        st.caption("Rimuovere un nuovo documento dalla bozza non cancella quello già salvato.")
     documents, fingerprints = {}, []
     valid = True
-    for field, uploaded in (("pdf_ricevuta", receipt), ("pdf_imbarco", boarding)):
-        if uploaded is None:
-            fingerprints.append(None)
-            st.session_state.pop(f"{prefix}_prepared_{field}", None)
-            continue
-        try:
-            if uploaded.size > MAX_UPLOAD_BYTES:
-                raise ValidationError("Ogni immagine deve essere di massimo 10 MB.")
-            data = uploaded.getvalue()
-            digest = sha256(data).hexdigest()
-            fingerprints.append(digest)
-            key = f"{prefix}_prepared_{field}"
-            cached = st.session_state.get(key)
-            if not cached or cached.digest != digest:
-                st.session_state[key] = prepare_document(data)
-            documents[field] = st.session_state[key]
-        except Exception as exc:
+    for field, slot, label, upload_label in (
+        ("pdf_ricevuta", "receipt", "Ricevuta", "Sostituisci ricevuta (facoltativo)" if editing else "Ricevuta di pagamento"),
+        ("pdf_imbarco", "boarding", "Carta d'imbarco", "Aggiungi o sostituisci carta d'imbarco (facoltativo)"),
+    ):
+        key = f"{prefix}_prepared_{field}"
+        error_key = f"{prefix}_upload_error_{field}"
+        # A retained document has no active selector: replacement starts with removal.
+        if key not in st.session_state:
+            generation = st.session_state.get(f"{prefix}_{slot}_generation", 0)
+            widget_key = f"{prefix}_{slot}" + (f"_{generation}" if generation else "")
+            uploaded = st.file_uploader(upload_label, type=["jpg", "jpeg", "png"], key=widget_key,
+                                        max_upload_size=10, on_change=mark_upload_changed, args=(prefix, field))
+            changed = st.session_state.pop(f"{prefix}_upload_changed_{field}", False)
+            if uploaded is None and changed:
+                st.session_state.pop(error_key, None)
+            elif uploaded is not None:
+                try:
+                    if uploaded.size > MAX_UPLOAD_BYTES:
+                        raise ValidationError("Ogni immagine deve essere di massimo 10 MB.")
+                    data = uploaded.getvalue()
+                    st.session_state[key] = prepare_document(data)
+                    st.session_state.pop(error_key, None)
+                except Exception as exc:
+                    log_failure("validate_upload", exc)
+                    st.session_state[error_key] = str(exc) if isinstance(exc, ValidationError) else "Immagine non valida. Rimuovila o scegli un altro file JPG o PNG."
+                else:
+                    # Immediately retire the accepted selector, before another choice.
+                    st.rerun()
+        cached = st.session_state.get(key)
+        error = st.session_state.get(error_key)
+        if error:
             valid = False
             fingerprints.append("invalid")
-            fail("validate_upload", exc)
+            st.error(error)
+        elif cached:
+            documents[field] = cached
+            fingerprints.append(cached.digest)
+            st.text(f"{label}: conservata nella bozza (solo questa sessione).")
+            st.caption("Per scegliere un altro file, rimuovi prima questo documento dalla bozza.")
+        else:
+            fingerprints.append(None)
+        if cached or error:
+            st.button(f"Rimuovi {label.lower()} dalla bozza", key=f"{prefix}_remove_{field}",
+                      on_click=remove_draft_document, args=(prefix, field, slot), width="stretch")
     return documents, tuple(fingerprints), valid
 
 
@@ -299,14 +337,31 @@ def analyze_documents(documents):
 
 def editor(prefix, initial, documents, changed, valid):
     if changed:
+        previous_ai = st.session_state.pop(f"{prefix}_extracted_values", {})
+        retained = {
+            field: st.session_state[f"{prefix}_field_{field}"] for field in FIELDS
+            if f"{prefix}_field_{field}" in st.session_state
+            and (field not in previous_ai or st.session_state[f"{prefix}_field_{field}"] != previous_ai[field])
+        }
         set_editor_values(prefix, initial)
+        for field, value in retained.items():
+            st.session_state[f"{prefix}_field_{field}"] = value
     if documents:
         with st.expander("Anteprima dei nuovi documenti"):
             for field, document in documents.items():
                 st.image(document.image, caption="Ricevuta" if field == "pdf_ricevuta" else "Carta d'imbarco",
                          width="stretch")
-    st.caption("L'analisi automatica è facoltativa. Solo premendo il pulsante, le immagini selezionate vengono inviate a Groq, se configurato. Se Groq non è configurato, temporaneamente non disponibile, vincolato da quota o limite, non raggiungibile o restituisce dati non validi, l'app prova l'OCR locale. In caso di errori di configurazione, autorizzazione o modello l'analisi si interrompe, ma resta la compilazione manuale. Verifica sempre i dati proposti, soprattutto il costo della singola tratta.")
-    if st.button("Leggi i nuovi documenti con AI", key=f"{prefix}_analyze", type="primary",
+    st.caption("Analisi facoltativa: solo premendo il pulsante invii le immagini selezionate a Groq, se configurato. Puoi anche compilare i dati manualmente. Controlla sempre il risultato.")
+    with st.expander("Dettagli e disponibilità dell'analisi"):
+        api_key, _model, mode = groq_settings()
+        if mode == "malformed":
+            st.caption("Analisi AI: impostazioni non leggibili (configurazione malformata). Correggi le impostazioni indicate nel README; fino ad allora l'analisi resta disabilitata.")
+        elif api_key:
+            st.caption("Analisi AI: Groq configurato. Connessione e chiave vengono verificati solo quando avvii un'analisi.")
+        else:
+            st.caption("Analisi AI: non configurata. Con le immagini caricate puoi usare l'OCR locale, se il server lo fornisce.")
+        st.caption("Se Groq non è configurato, temporaneamente non disponibile, vincolato da quota o limite, non raggiungibile o restituisce dati non validi, l'app prova l'OCR locale. In caso di errori di configurazione, autorizzazione o modello l'analisi si interrompe, ma resta la compilazione manuale. Verifica sempre i dati proposti, soprattutto il costo della singola tratta.")
+    if st.button("Leggi i nuovi documenti con AI", key=f"{prefix}_analyze",
                  width="stretch", disabled=not documents or not valid):
         try:
             if time.monotonic() - st.session_state.get("last_analysis", -100) < 15:
@@ -318,6 +373,12 @@ def editor(prefix, initial, documents, changed, valid):
             if values:
                 merged = {**current, **{k: v for k, v in values.items() if v not in (None, "")}}
                 set_editor_values(prefix, merged)
+                previous_ai = st.session_state.get(f"{prefix}_extracted_values", {})
+                st.session_state[f"{prefix}_extracted_values"] = {
+                    **previous_ai,
+                    **{field: st.session_state[f"{prefix}_field_{field}"]
+                       for field, value in values.items() if value not in (None, "")},
+                }
             if source == "groq":
                 st.success("Analisi completata con Groq. Controlla e correggi i dati prima di salvare.")
             elif source == "ocr":
@@ -335,22 +396,39 @@ def editor(prefix, initial, documents, changed, valid):
                 st.error(PERMANENT_MESSAGES.get(reason, PERMANENT_MESSAGES["unclassified"]))
         except Exception as exc:
             fail_extraction(exc)
-    st.caption("Puoi lasciare vuoti i dati che non conosci e completarli in seguito. Le date e gli importi inseriti devono essere validi.")
-    with st.form(f"{prefix}_form"):
+    st.subheader("Dati del volo")
+    st.caption("Lascia vuoti i dati che non conosci: potrai completarli in seguito. Date in gg/mm/aaaa e importi come 123,45.")
+    # Native inputs commit each change, including before an upload or navigation.
+    with st.container(border=True):
         values = {}
-        for field in FIELDS:
-            values[field] = st.text_input(LABELS[field], key=f"{prefix}_field_{field}", max_chars=160)
-        save = st.form_submit_button("Salva modifiche" if prefix == "edit" else "Salva richiesta",
-                                     type="primary", width="stretch", disabled=not valid)
+        for heading, fields in (
+            ("Itinerario", ("aeroporto_partenza", "aeroporto_destinazione", "compagnia_aerea", "numero_volo")),
+            ("Date e spesa", ("data_volo", "data_acquisto", "costo_tratta")),
+        ):
+            st.markdown(f"**{heading}**")
+            for field in fields:
+                values[field] = st.text_input(LABELS[field], key=f"{prefix}_field_{field}", max_chars=160)
+        st.caption("Il costo riguarda la singola tratta. Salvare qui non invia una domanda di rimborso.")
+        save = st.button("Salva modifiche" if prefix == "edit" else "Salva richiesta",
+                         key=f"{prefix}_save", type="primary", width="stretch", disabled=not valid)
     return normalize_fields(values) if save else None
 
 
+def discard_draft(prefix, editing=False):
+    with st.expander("Annulla modifiche" if editing else "Svuota bozza"):
+        st.caption("I dati e i nuovi documenti non salvati andranno persi. Le richieste e i documenti già salvati restano nello storico.")
+        confirm = st.checkbox("Confermo di voler scartare la bozza", key=f"{prefix}_confirm_reset")
+        label = "Annulla e torna allo storico" if editing else "Svuota e inizia una nuova richiesta"
+        if st.button(label, key=f"{prefix}_reset", width="stretch", disabled=not confirm):
+            reset_editor(prefix)
+            if editing:
+                st.session_state.pop("editing", None)
+            st.rerun()
+
+
 def new_request(repo):
-    st.subheader("Nuova richiesta")
+    st.subheader("Nuova richiesta", divider="yellow")
     st.write("Salva la ricevuta appena acquisti il volo. Potrai aggiungere la carta d'imbarco dallo storico prima della partenza.")
-    if st.button("Svuota e inizia una nuova richiesta", width="stretch"):
-        reset_editor("new")
-        st.rerun()
     documents, fingerprint, valid = uploads("new")
     changed = st.session_state.get("new_fingerprint") != fingerprint
     if changed or "new_request_id" not in st.session_state:
@@ -366,18 +444,18 @@ def new_request(repo):
             st.rerun()
     except Exception as exc:
         fail("create_request", exc)
+    discard_draft("new")
 
 
 def edit_request(repo):
     record = st.session_state["editing"]
-    st.subheader("Modifica richiesta")
+    st.subheader("Modifica richiesta", divider="yellow")
+    st.text(f"{record.get('aeroporto_partenza') or 'Partenza da inserire'} → {record.get('aeroporto_destinazione') or 'Destinazione da inserire'}")
     st.write("I documenti già salvati vengono conservati. Carica soltanto quelli da aggiungere o sostituire.")
-    st.info("Ricevuta salvata" if record.get("pdf_ricevuta") else "Ricevuta da aggiungere")
-    st.info("Carta d'imbarco salvata" if record.get("pdf_imbarco") else "Carta d'imbarco da aggiungere")
-    if st.button("Annulla e torna allo storico", width="stretch"):
-        st.session_state.pop("editing", None)
-        reset_editor("edit")
-        st.rerun()
+    st.badge("Ricevuta salvata" if record.get("pdf_ricevuta") else "Ricevuta da aggiungere",
+             color="blue" if record.get("pdf_ricevuta") else "yellow")
+    st.badge("Carta d'imbarco salvata" if record.get("pdf_imbarco") else "Carta d'imbarco da aggiungere",
+             color="blue" if record.get("pdf_imbarco") else "yellow")
     documents, fingerprint, valid = uploads("edit", editing=True)
     changed = st.session_state.get("edit_fingerprint") != fingerprint
     st.session_state["edit_fingerprint"] = fingerprint
@@ -393,13 +471,19 @@ def edit_request(repo):
             st.rerun()
     except Exception as exc:
         fail("update_request", exc)
+    discard_draft("edit", editing=True)
+
+
+def open_new_request():
+    # A callback runs before the navigation radio is instantiated again.
+    st.session_state["view"] = "Nuova richiesta"
 
 
 def history(repo):
     if "editing" in st.session_state:
         edit_request(repo)
         return
-    st.subheader("Storico rimborsi")
+    st.subheader("Storico richieste", divider="yellow")
     page = st.session_state.get("history_page", 0)
     try:
         records, has_more = repo.page(page)
@@ -409,17 +493,26 @@ def history(repo):
         st.info("Se il problema persiste, contatta l'amministratore della piattaforma.")
         return
     total = display_amount(summary["totale_speso"]) or "0,00"
-    st.metric("Totale spese aeree", f"€ {total}")
-    st.caption(f"{summary['numero_richieste']} richieste complessive. Il totale include solo gli importi validi già inseriti.")
+    with st.container(border=True):
+        st.metric("Totale spese aeree", f"€ {total}")
+        count = summary["numero_richieste"]
+        requests_label = "1 richiesta salvata" if count == 1 else f"{count} richieste salvate"
+        st.caption(f"{requests_label}. Il totale include solo gli importi validi già inseriti.")
+    st.caption("Le spese non sono il rimborso spettante. L'app non calcola rimborsi e non invia domande. «Documenti completi» indica solo la presenza di ricevuta e carta d'imbarco.")
     if not records:
-        st.info("Nessuna richiesta in questa pagina.")
+        st.info("Non hai ancora salvato richieste. Inizia dalla ricevuta del tuo volo." if not summary["numero_richieste"] else "Nessuna richiesta in questa pagina.")
+        st.button("Crea una nuova richiesta", key="history_create", type="primary",
+                  width="stretch", on_click=open_new_request)
     st.caption(f"Pagina {page + 1} · fino a 20 richieste per pagina")
     for row in records:
         record_id = row["id"]
         status = "Documenti completi" if row.get("pdf_imbarco") and row.get("pdf_ricevuta") else "Documenti da completare"
-        title = f"{display_date(row.get('data_volo')) or 'Data da inserire'} · {row.get('compagnia_aerea') or 'Compagnia da inserire'} {row.get('numero_volo') or ''} · {status}"
+        itinerary = f"{row.get('aeroporto_partenza') or 'Partenza da inserire'} → {row.get('aeroporto_destinazione') or 'Destinazione da inserire'}"
+        title = f"{itinerary} · {display_date(row.get('data_volo')) or 'Data da inserire'} · {status}"
         with st.expander(plain_label(title)):
-            st.text(f"{row.get('aeroporto_partenza') or '—'} → {row.get('aeroporto_destinazione') or '—'}")
+            st.text(itinerary)
+            st.text(f"Volo: {row.get('compagnia_aerea') or 'Compagnia da inserire'} {row.get('numero_volo') or ''}")
+            st.badge(status, color="blue" if row.get("pdf_imbarco") and row.get("pdf_ricevuta") else "yellow")
             st.text(f"Acquisto: {display_date(row.get('data_acquisto')) or 'Da inserire'}")
             amount = display_amount(row.get("costo_tratta"))
             st.text(f"Costo tratta: {amount + ' €' if amount else 'Da inserire'}")
@@ -444,6 +537,7 @@ def history(repo):
                     st.download_button(f"Scarica {label}", cached[2], file_name=f"{field}_{record_id}.pdf",
                                        mime="application/pdf", key=f"download_{field}_{record_id}",
                                        on_click="ignore", width="stretch")
+            st.caption("Eliminazione definitiva: verranno rimossi la richiesta e i suoi documenti.")
             confirm = st.checkbox("Confermo di voler eliminare questa richiesta", key=f"confirm_{record_id}")
             if st.button("Elimina richiesta", key=f"delete_{record_id}", width="stretch",
                          disabled=not confirm):
@@ -454,21 +548,21 @@ def history(repo):
                     st.rerun()
                 except Exception as exc:
                     fail("delete_request", exc)
-    previous, following = st.columns(2)
-    if previous.button("Pagina precedente", width="stretch", disabled=page == 0):
-        st.session_state["history_page"] = page - 1
-        st.session_state.pop("download", None)
-        st.rerun()
-    if following.button("Pagina successiva", width="stretch", disabled=not has_more):
-        st.session_state["history_page"] = page + 1
-        st.session_state.pop("download", None)
-        st.rerun()
+    with st.container(horizontal=True):
+        if st.button("Pagina precedente", width="stretch", disabled=page == 0):
+            st.session_state["history_page"] = page - 1
+            st.session_state.pop("download", None)
+            st.rerun()
+        if st.button("Pagina successiva", width="stretch", disabled=not has_more):
+            st.session_state["history_page"] = page + 1
+            st.session_state.pop("download", None)
+            st.rerun()
 
 
 def main():
     st.set_page_config(page_title="Caro Voli Sicilia", page_icon="✈️",
                        layout="centered", initial_sidebar_state="auto")
-    st.title("✈️ Caro Voli Sicilia")
+    st.title("Caro Voli Sicilia")
     show_notice()
     try:
         client = session_client(st.session_state, st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -477,16 +571,14 @@ def main():
         st.error("La piattaforma non è configurata correttamente. Contatta l'amministratore.")
         st.stop()
     user = authenticate(client)
-    api_key, _model, mode = groq_settings()
-    if mode == "malformed":
-        st.caption("Analisi AI: impostazioni non leggibili (configurazione malformata). Correggi le impostazioni indicate nel README; fino ad allora l'analisi resta disabilitata.")
-    elif api_key:
-        st.caption("Analisi AI: Groq configurato. Connessione e chiave vengono verificati solo quando avvii un'analisi.")
-    else:
-        st.caption("Analisi AI: non configurata. Con le immagini caricate puoi usare l'OCR locale, se il server lo fornisce.")
-    account, logout = st.columns([3, 1])
-    account.caption(f"Accesso: {user.email}")
-    if logout.button("Esci", key="logout", width="stretch"):
+    # Keep text drafts when Streamlit removes widgets from the inactive view.
+    for prefix in ("new", "edit"):
+        for field in FIELDS:
+            key = f"{prefix}_field_{field}"
+            if key in st.session_state:
+                st.session_state[key] = st.session_state[key]
+    st.text(f"Accesso: {user.email}", wrap=True)
+    if st.button("Esci", key="logout"):
         try:
             client.auth.sign_out({"scope": "local"})
         except Exception as exc:
@@ -495,7 +587,7 @@ def main():
             clear_session(st.session_state)
         st.rerun()
     repo = RequestsRepository(client, user.id)
-    view = st.radio("Vai a", ["Nuova richiesta", "Storico rimborsi"], horizontal=True, key="view")
+    view = st.radio("Vai a", ["Nuova richiesta", "Storico richieste"], horizontal=True, key="view")
     if view == "Nuova richiesta":
         new_request(repo)
     else:
